@@ -7,6 +7,10 @@
 #include "opencv2/opencv.hpp"
 #include <Eigen/Core>
 #include <typeinfo>
+#include <math.h>
+#include <unsupported/Eigen/CXX11/Tensor>
+#include <pcl/io/ply_io.h>
+#include "happly.h"
 
 int main ()
 {
@@ -44,6 +48,7 @@ int main ()
     imgs_paths.push_back("/home/******/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/4_effl");
     imgs_paths.push_back("/home/******/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/5_vege");
     imgs_paths.push_back("/home/******/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/6_cp");
+    imgs_paths.push_back("/home/******/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/8_background");
     imgs_paths.push_back("/home/******/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/9_mask");
 
     // containers
@@ -68,8 +73,9 @@ int main ()
                     transform(i,j) = std::stof(transform_xml.substr(0, transform_xml.find(delimiter)));
                     transform_xml.erase(0, transform_xml.find(delimiter) + delimiter.length());
                 }
+
             transform = transform.inverse().eval();
-            transforms.push_back(transform);
+            transforms.push_back(transform * chunk_transform.inverse().eval());
 
             // world origin
             auto origin = chunk_transform * transform.inverse().eval();
@@ -99,8 +105,10 @@ int main ()
                 curr_images.push_back(img);
             }
 
-            if (transforms.size() == 1)
-                break;
+            images.push_back(curr_images);
+
+            //if (transforms.size() == 12)
+            //    break;
         }
     }
 
@@ -123,6 +131,149 @@ int main ()
         std::cout << i << "  " << intrinsics[i] << std::endl;*/
 
 
+    Eigen::MatrixXf origins_mat(3,origins.size());
+    for (int i = 0; i < origins.size(); i++)
+        origins_mat.col(i) = origins[i];
+    std::cout << "origins: " << origins_mat << std::endl;
+
+    Eigen::MatrixXf directions_mat(3,directions.size());
+    for (int i = 0; i < directions.size(); i++)
+        directions_mat.col(i) = directions[i];
+    std::cout << "directions: " << directions_mat << std::endl;
+
+    Eigen::MatrixXf transforms_mat(4*transforms.size(),4);
+    for (int i = 0; i < transforms.size(); i++){
+        transforms_mat.block(i*4, 0, 4, 4) = transforms[i];
+    }
+
+
+    // load ply point cloud
+    happly::PLYData plyIn("/home/******/Desktop/rebars_small_medium.ply");
+    std::vector<std::array<double, 3>> xyz = plyIn.getVertexPositions();
+    std::vector<float> nx = plyIn.getElement("vertex").getProperty<float>("nx");
+    std::vector<float> ny = plyIn.getElement("vertex").getProperty<float>("ny");
+    std::vector<float> nz = plyIn.getElement("vertex").getProperty<float>("nz");
+
+    // container
+    std::vector<int> defect;
+
+    //omp_set_num_threads(4);
+    //#pragma omp parallel for
+    for(int i = 0; i < xyz.size(); i++){
+        std::cout << i << " of " << xyz.size() << std::endl;
+        //const int id = omp_get_thread_num();
+
+        // get coordinates and normals
+        Eigen::Vector4f point(xyz[i][0], xyz[i][1], xyz[i][2], 1);
+        Eigen::Vector3f normal(nx[i], ny[i], nz[i]);
+
+        // compute distances to cameras
+        auto distances = (origins_mat.colwise() - point.head(3)).colwise().norm();
+
+        // apply transformation
+        Eigen::VectorXf point_trans = (transforms_mat * point);
+        Eigen::MatrixXf point_trans_mat = Eigen::Map<Eigen::MatrixXf>(point_trans.data(), 4, point_trans.size() / 4);
+        point_trans_mat = point_trans_mat.array().rowwise() /  point_trans_mat.row(2).array();
+        point_trans_mat = point_trans_mat.block(0,0,2,point_trans.size() / 4);
+
+        // correct for radial distortion
+        Eigen::VectorXf rr = point_trans_mat.colwise().norm();
+        auto ones = rr;
+        ones.setOnes();
+
+        Eigen::VectorXf rr2 = rr.cwiseProduct(rr);
+        Eigen::VectorXf rr4 = rr2.cwiseProduct(rr2);
+        Eigen::VectorXf rr6 = rr2.cwiseProduct(rr2).cwiseProduct(rr2);
+        Eigen::VectorXf rr8 = rr4.cwiseProduct(rr4);
+        Eigen::VectorXf row0 = point_trans_mat.row(0).array();
+        Eigen::VectorXf row1 = point_trans_mat.row(1);
+
+        Eigen::VectorXf px = ones + intrinsics[0] * rr2 +
+                                    intrinsics[1] * rr4 +
+                                    intrinsics[2] * rr6 +
+                                    intrinsics[3] * rr8;
+        px = row0.array() * px.array();
+        px = px + intrinsics[4] * (rr2 + 2 * row0.cwiseProduct(row0)) +
+                                   2 * intrinsics[5] * row0.cwiseProduct(row1);
+
+        Eigen::VectorXf py = ones + intrinsics[0] * rr2 +
+                                    intrinsics[1] * rr4 +
+                                    intrinsics[2] * rr6 +
+                                    intrinsics[3] * rr8;
+        py = row1.array() * py.array();
+        py = py + intrinsics[4] * (rr2 + 2 * row1.cwiseProduct(row1)) +
+                                   2 * intrinsics[5] * row0.cwiseProduct(row1);
+
+        // get uv coordinates
+        Eigen::VectorXf pu = ones * intrinsics[7] * 0.5 + ones * intrinsics[9] + px * intrinsics[6];
+        Eigen::VectorXf pv = ones * intrinsics[8] * 0.5 + ones * intrinsics[10] + py * intrinsics[6];
+
+        pu = pu * 0.5;
+        pv = pv * 0.5;
+
+        // determine uv mask
+        Eigen::VectorXf mask_uv = (0 < pu.array() && pu.array() < 0.5 * intrinsics[7] &&
+                                   0 < pv.array() && pv.array() < 0.5 * intrinsics[8]).cast<float>();
+
+
+        // compute angle
+        Eigen::VectorXf nominator = directions_mat.transpose() * normal;
+        Eigen::VectorXf denominator = normal.norm() * directions_mat.colwise().norm();
+        Eigen::VectorXf angles = nominator.array() / denominator.array();
+        angles = angles.array().acos();
+        angles = angles * (180.0/M_PI);
+
+        // determine angle mask
+        Eigen::VectorXf mask_angles = (100 < angles.array() && angles.array() < 260).cast<float>();
+
+        // apply mask
+        pu = mask_uv.array() * pu.array();
+        pv = mask_uv.array() * pv.array();
+
+        // compute weight
+        Eigen::VectorXf weight = distances;
+        weight = weight.array() * mask_angles.array();
+        weight = weight.array() * mask_uv.array();
+        weight = ones * weight.array().maxCoeff() - weight;
+        weight = weight.array() * mask_angles.array();
+        weight = weight.array() * mask_uv.array();
+        weight = weight.array() * weight.array();
+        weight = weight.array() * weight.array();
+        weight = weight.array() * weight.array();
+        weight = weight / weight.sum();
+
+
+        // container for accumulated weighted probabilities
+        Eigen::VectorXf accumulator = Eigen::VectorXf::Zero(imgs_paths.size());
+
+        for (int j = 0; j < pu.size(); j++ ){
+            if (weight[j] == 0)
+                continue;
+            Eigen::VectorXf curr_val(imgs_paths.size());
+
+            for (int k = 0; k < imgs_paths.size(); k++){
+                curr_val(k) = float(int(images[j][k].at<uchar>(pv[j],pu[j])));///255;
+            }
+
+            // apply weight and accumulate
+            curr_val = weight[j] * curr_val;
+            accumulator = accumulator + curr_val;
+        }
+
+        // zero out image quality (mask) value
+        accumulator[7] = 0;
+
+        // get argmax
+        Eigen::VectorXf::Index   maxIndex;
+        float maxNorm = accumulator.array().maxCoeff(&maxIndex);
+
+        defect.push_back(maxIndex);
+    }
+
+
+    // export ply
+    plyIn.getElement("vertex").addProperty<int>("defect", defect);
+    plyIn.write("/home/******/Desktop/rebars_small_medium_out.ply", happly::DataFormat::Binary);
 
 
     return (0);
