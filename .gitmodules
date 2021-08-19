@@ -1,3 +1,6 @@
 [submodule "pugixml"]
 	path = pugixml
 	url = https://github.com/zeux/pugixml.git
+[submodule "happly"]
+	path = happly
+	url = https://github.com/nmwsharp/happly.git

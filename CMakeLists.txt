@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
+set (CMAKE_CXX_STANDARD 11)
 
 project(colorize_point_cloud)
 
@@ -10,6 +11,8 @@ include_directories(${PCL_INCLUDE_DIRS})
 link_directories(${PCL_LIBRARY_DIRS})
 add_definitions(${PCL_DEFINITIONS})
 include_directories( ${OpenCV_INCLUDE_DIRS} )
+
+include_directories(happly)
 
 include_directories(pugixml/src)
 
