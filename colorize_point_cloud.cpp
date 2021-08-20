@@ -12,21 +12,16 @@
 #include <pcl/io/ply_io.h>
 #include "happly.h"
 
-int main ()
+int main (int argc, char *argv[])
 {
     // paramters
-    const char* xml_path = "/home/chrisbe/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/cameras.xml";
-    std::string cloud_path = "/home/chrisbe/Desktop/crack_0_03M_res__cc.ply";
+    const char* xml_path = argv[1];
+    std::string cloud_path = argv[2];
+
     // image paths
     std::vector<std::string> imgs_paths;
-    imgs_paths.push_back("/home/chrisbe/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/1_crack");
-    imgs_paths.push_back("/home/chrisbe/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/2_spall");
-    imgs_paths.push_back("/home/chrisbe/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/3_corr");
-    imgs_paths.push_back("/home/chrisbe/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/4_effl");
-    imgs_paths.push_back("/home/chrisbe/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/5_vege");
-    imgs_paths.push_back("/home/chrisbe/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/6_cp");
-    imgs_paths.push_back("/home/chrisbe/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/8_background");
-    imgs_paths.push_back("/home/chrisbe/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/9_mask");
+    for (int i = 4; i < argc; i++)
+        imgs_paths.push_back(argv[i]);
 
     // parse agisoft xml
     pugi::xml_document doc;
@@ -60,6 +55,8 @@ int main ()
     std::vector<Eigen::Vector3d> origins;
     std::vector<Eigen::Vector3d> directions;
     std::vector<double> intrinsics;
+
+    std::cout << "Preloading images..." << std::flush;
 
     // parse cameras
     for (pugi::xml_node camera: doc.child("document").child("chunk").child("cameras").children("camera")){
@@ -133,12 +130,10 @@ int main ()
     Eigen::MatrixXd origins_mat(3,origins.size());
     for (int i = 0; i < origins.size(); i++)
         origins_mat.col(i) = origins[i];
-    std::cout << "origins: " << origins_mat << std::endl;
 
     Eigen::MatrixXd directions_mat(3,directions.size());
     for (int i = 0; i < directions.size(); i++)
         directions_mat.col(i) = directions[i];
-    std::cout << "directions: " << directions_mat << std::endl;
 
     Eigen::MatrixXd transforms_mat(4*transforms.size(),4);
     for (int i = 0; i < transforms.size(); i++){
@@ -174,6 +169,8 @@ int main ()
         conf.push_back(0);
     }
 
+    std::cout << " preload done." << std::endl;
+
     // start timer
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
@@ -181,8 +178,8 @@ int main ()
     #pragma omp parallel for
     for(int i = 0; i < xyz.size(); i++){
         // some console output
-        if (omp_get_thread_num() == 0 && i % int(xyz.size()/16/100) == 0){
-            std::cout << "\t\r" << int(100*i/(xyz.size()/16)) << "% of " << xyz.size() << " | Time: " <<
+        if (omp_get_thread_num() == 0 && i % int(xyz.size()/16/100) == 0 || i == (xyz.size()/16-1)){
+            std::cout << "\t\r" << int(100*i/(xyz.size()/16-1)) << "% of " << xyz.size() << " | Time: " <<
                 std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - begin).count() << "sec " << std::flush;
         }
 
@@ -249,11 +246,13 @@ int main ()
         // determine angle mask
         Eigen::VectorXd mask_angles = (100 < angles.array() && angles.array() < 260).cast<double>();
 
-        // apply mask
+        // apply masks
         pu = mask_uv.array() * pu.array();
+        pu = mask_angles.array() * pu.array();
         pv = mask_uv.array() * pv.array();
+        pv = mask_angles.array() * pv.array();
 
-        // compute weight
+        // compute distance weight
         Eigen::VectorXd weight = distances;
         weight = weight.array() * mask_angles.array();
         weight = weight.array() * mask_uv.array();
@@ -312,7 +311,9 @@ int main ()
     plyIn.getElement("vertex").addProperty<float>("spalling", spall);
     plyIn.getElement("vertex").addProperty<float>("crack", crack);
 
-    plyIn.write("/home/chrisbe/Desktop/rebars_small_medium_out.ply", happly::DataFormat::Binary);
+    plyIn.write(argv[3], happly::DataFormat::Binary);
+
+    std::cout << std::endl;
 
     return (0);
 }
