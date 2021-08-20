@@ -10,5 +10,5 @@
 /home/******/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/5_vege \
 /home/******/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/6_cp \
 /home/******/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/8_background \
-/home/******/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/9_mask
+/home/******/repos/defect-demonstration/static/uploads/2021_07_20__15_19_17/10_sharpness
 

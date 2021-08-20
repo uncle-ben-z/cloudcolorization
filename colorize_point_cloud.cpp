@@ -106,8 +106,8 @@ int main (int argc, char *argv[])
 
             images.push_back(curr_images);
 
-            //if (transforms.size() == 57)
-            //    break;
+            if (transforms.size() == 57)
+                break;
         }
     }
 
@@ -264,7 +264,9 @@ int main (int argc, char *argv[])
 
         // container for accumulated weighted probabilities
         Eigen::VectorXd accumulator = Eigen::VectorXd::Zero(imgs_paths.size());
+        Eigen::MatrixXd values = Eigen::MatrixXd::Zero(pu.size(), imgs_paths.size());
 
+        // get values from images
         for (int j = 0; j < pu.size(); j++ ){
             if (weight[j] == 0)
                 continue;
@@ -273,10 +275,19 @@ int main (int argc, char *argv[])
             for (int k = 0; k < imgs_paths.size(); k++){
                 curr_val(k) = double(int(images[j][k].at<uchar>(pv[j],pu[j])));///255;
             }
-            // apply weight and accumulate
-            curr_val = weight[j] * curr_val;
-            accumulator = accumulator + curr_val;
+            values.row(j) = curr_val;
         }
+
+        // sharpness weight
+        Eigen::VectorXd sharpness = values.block(0, 7, pu.size(), 1);
+        sharpness = sharpness / sharpness.sum();
+
+        // apply weights
+        values = values.array().colwise() * sharpness.array();
+        values = values.array().colwise() * weight.array();
+
+        // sum over images
+        accumulator = values.colwise().sum();
 
         // zero out image quality (mask) value
         accumulator[7] = 0;
