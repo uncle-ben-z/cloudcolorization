@@ -106,8 +106,8 @@ int main (int argc, char *argv[])
 
             images.push_back(curr_images);
 
-            if (transforms.size() == 57)
-                break;
+            //if (transforms.size() == 57)
+            //    break;
         }
     }
 
@@ -143,9 +143,24 @@ int main (int argc, char *argv[])
     // load ply point cloud
     happly::PLYData plyIn(cloud_path);
     std::vector<std::array<double, 3>> xyz = plyIn.getVertexPositions();
-    std::vector<double> nx = plyIn.getElement("vertex").getProperty<double>("nx");
-    std::vector<double> ny = plyIn.getElement("vertex").getProperty<double>("ny");
-    std::vector<double> nz = plyIn.getElement("vertex").getProperty<double>("nz");
+
+    // get normals
+    std::vector<double> nx;
+    std::vector<double> ny;
+    std::vector<double> nz;
+    try{
+        nx = plyIn.getElement("vertex").getProperty<double>("nx");
+        ny = plyIn.getElement("vertex").getProperty<double>("ny");
+        nz = plyIn.getElement("vertex").getProperty<double>("nz");
+    } catch (const std::exception& e) {
+        nx = plyIn.getElement("vertex").getProperty<double>("normal_x");
+        ny = plyIn.getElement("vertex").getProperty<double>("normal_y");
+        nz = plyIn.getElement("vertex").getProperty<double>("normal_z");
+        /*plyIn.getElement("vertex").addProperty<float>("nx", nx);
+        plyIn.getElement("vertex").addProperty<float>("ny", ny);
+        plyIn.getElement("vertex").addProperty<float>("nz", nz);*/
+    }
+
 
     // initialize containers
     std::vector<int> defect;
@@ -289,26 +304,36 @@ int main (int argc, char *argv[])
         // sum over images
         accumulator = values.colwise().sum();
 
-        // zero out image quality (mask) value
-        accumulator[7] = 0;
+        // shrinked accumulator
+        Eigen::VectorXd accumulator_shrinked(imgs_paths.size()-1); // TODO: {accumulator[6], accumulator[5], ...
+        // manual reverse (didn't work: accumulator_shrinked = accumulator_shrinked.array().reverse();)
+        accumulator_shrinked[0] = accumulator[6];
+        accumulator_shrinked[1] = accumulator[5];
+        accumulator_shrinked[2] = accumulator[4];
+        accumulator_shrinked[3] = accumulator[3];
+        accumulator_shrinked[4] = accumulator[2];
+        accumulator_shrinked[5] = accumulator[1];
+        accumulator_shrinked[6] = accumulator[0];
 
         // get argmax
         Eigen::VectorXd::Index   maxIndex;
-        double maxNorm = accumulator.array().maxCoeff(&maxIndex);
+        double maxNorm = accumulator_shrinked.array().maxCoeff(&maxIndex);
 
         // defects
-        defect[i] = 6-maxIndex;
-        crack[i] = accumulator[6-6];
-        spall[i] = accumulator[6-5];
-        corr[i] = accumulator[6-4];
-        effl[i] = accumulator[6-3];
-        vege[i] = accumulator[6-2];
-        cp[i] = accumulator[6-1];
-        back[i] = accumulator[6-0];
+        defect[i] = maxIndex;
+        crack[i] = accumulator_shrinked[6];
+        spall[i] = accumulator_shrinked[5];
+        corr[i] = accumulator_shrinked[4];
+        effl[i] = accumulator_shrinked[3];
+        vege[i] = accumulator_shrinked[2];
+        cp[i] = accumulator_shrinked[1];
+        back[i] = accumulator_shrinked[0];
 
         // confidence
-        accumulator[maxIndex] = 0;
-        conf[i] = maxNorm - accumulator.array().maxCoeff();
+        accumulator_shrinked[maxIndex] = 0;
+        conf[i] = maxNorm - accumulator_shrinked.array().maxCoeff();
+
+
     }
 
     // export ply
