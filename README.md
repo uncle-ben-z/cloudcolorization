@@ -1,5 +1,7 @@
 # Point Cloud Colorization
 
+### No warranty or support is granted in any way! Use at your own risk. Respect the license. 
+
 This repo hosts C++ code for application-specific cloud colorization. It refers to the backprojection of structural defects automatedly detected in images, i.e. 2D, into a (3D) point cloud. It uses the results from Structure-from-Motion (SfM) as provided by the Agisoft xml-file.
 
 #### Clone
@@ -11,7 +13,7 @@ git clone git@github.com:uncle-ben-z/cloudcolorization-fast.git --recursive
 ``` linux 
 cd cloudcolorization-fast
 
-# in case you forgot "-- recursive" above
+# in case you forgot "--recursive" above
 git submodule init
 git submodule update
 
@@ -31,3 +33,8 @@ make
 ...
 [path_to_folder_with_sharpness_images]  
 ```
+
+
+### Optimization Potential
+- Use Eigen::Tensor (currently seemingly not natively supported by Eigen) instead of std::vector with images. Optionally try Eigen::Matrix of Eigen::Vector.
+ 
