@@ -11,21 +11,29 @@
 #include <unsupported/Eigen/CXX11/Tensor>
 #include <pcl/io/ply_io.h>
 #include "happly.h"
+#include "cnpy.h"
 
-int main (int argc, char *argv[])
-{
-    // paramters
-    const char* xml_path = argv[1];
-    std::string cloud_path = argv[2];
 
-    // image paths
-    std::vector<std::string> imgs_paths;
-    for (int i = 4; i < argc; i++)
-        imgs_paths.push_back(argv[i]);
+class AgisoftXMLReader {
+    Eigen::Matrix4d chunk_transform;
+    std::string xml_path;
+
+  public:
+    Eigen::MatrixXd origins_mat;
+    Eigen::MatrixXd transforms_mat;
+    Eigen::MatrixXd intrinsics_mat;
+    Eigen::MatrixXd directions_mat;
+    std::vector<std::vector<cv::Mat>> images;
+    std::vector<Eigen::MatrixXf> depths;
+    AgisoftXMLReader(std::string, std::vector<std::string>);
+};
+
+
+AgisoftXMLReader::AgisoftXMLReader(std::string xml_path, std::vector<std::string> imgs_paths){
 
     // parse agisoft xml
     pugi::xml_document doc;
-    pugi::xml_parse_result result = doc.load_file(xml_path);
+    pugi::xml_parse_result result = doc.load_file(xml_path.c_str());
     std::string delimiter = " ";
 
     // chunk transform
@@ -57,9 +65,9 @@ int main (int argc, char *argv[])
             std::stod(sensor.child("calibration").child("k1").text().get()),
             std::stod(sensor.child("calibration").child("k2").text().get()),
             std::stod(sensor.child("calibration").child("k3").text().get()),
-            0,
-            0,
-            0,
+            0, // typically not available
+            0, // typically not available
+            0, // typically not available
             std::stod(sensor.child("calibration").child("f").text().get()),
             std::stod(sensor.child("calibration").child("resolution").attribute("width").value()),
             std::stod(sensor.child("calibration").child("resolution").attribute("height").value()),
@@ -70,7 +78,6 @@ int main (int argc, char *argv[])
 
     // containers
     std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>> transforms;
-    std::vector<std::vector<cv::Mat>> images;
     std::vector<Eigen::Vector3d> origins;
     std::vector<Eigen::Vector3d> directions;
     std::vector<int> sensor_id;
@@ -108,7 +115,6 @@ int main (int argc, char *argv[])
             z(2) = -1;
             ret = orig - origin * z;
             directions.push_back(ret.block(0,0,3,1));
-            //std::cout << ret << std::endl;
 
             // cache images
             std::vector<cv::Mat> curr_images;
@@ -116,10 +122,23 @@ int main (int argc, char *argv[])
                 std::string img_path;
                 if (imgs_paths[i].find("_mask") != std::string::npos)
                     img_path = imgs_paths[i] + "/" + camera.attribute("label").value() + ".png";
+                else if (imgs_paths[i].find("_depth") != std::string::npos){
+                    img_path = imgs_paths[i] + "/" + camera.attribute("label").value() + ".npy";
+                    cnpy::NpyArray arr = cnpy::npy_load(img_path);
+                    float* loaded_data = arr.data<float>();
+                    size_t nrows = arr.shape[0];
+                    size_t ncols = arr.shape[1];
+                    Eigen::MatrixXf dep(nrows, ncols);
+                    for (int j = 0; j < nrows; j++)
+                        for (int k = 0; k < ncols; k++)
+                            dep(j,k) = loaded_data[j*ncols+k];
+                    depths.push_back(dep);
+                    std::cout << dep.array().maxCoeff() << std::endl;
+                    continue;
+                }
                 else
                     img_path = imgs_paths[i] + "/" + camera.attribute("label").value() + ".jpg";
 
-                //std::cout << img_path << std::endl;
                 cv::Mat img = cv::imread(img_path, cv::IMREAD_GRAYSCALE);
                 cv::resize(img, img, cv::Size(img.cols/2, img.rows/2), cv::INTER_LINEAR);
                 curr_images.push_back(img);
@@ -127,27 +146,42 @@ int main (int argc, char *argv[])
 
             images.push_back(curr_images);
 
-            //if (transforms.size() == 10)
+            //if (transforms.size() == 100)
             //    break;
         }
     }
 
     // convert to Eigen matrices
-    Eigen::MatrixXd origins_mat(3,origins.size());
+    origins_mat = Eigen::MatrixXd::Zero(3,origins.size());
     for (int i = 0; i < origins.size(); i++)
         origins_mat.col(i) = origins[i];
 
-    Eigen::MatrixXd directions_mat(3,directions.size());
+    directions_mat = Eigen::MatrixXd::Zero(3,directions.size());
     for (int i = 0; i < directions.size(); i++)
         directions_mat.col(i) = directions[i];
 
-    Eigen::MatrixXd transforms_mat(4*transforms.size(),4);
+    transforms_mat = Eigen::MatrixXd::Zero(4*transforms.size(),4);
     for (int i = 0; i < transforms.size(); i++)
         transforms_mat.block(i*4, 0, 4, 4) = transforms[i];
 
-    Eigen::MatrixXd intrinsics_mat(sensor_id.size(), 11);
+    intrinsics_mat = Eigen::MatrixXd::Zero(sensor_id.size(), 11);
     for (int i = 0; i < sensor_id.size(); i++)
         intrinsics_mat.row(i) = intrinsics[sensor_id[i]];
+}
+
+
+int main (int argc, char *argv[])
+{
+    // paramters
+    std::string xml_path = argv[1];
+    std::string cloud_path = argv[2];
+
+    // image folder paths
+    std::vector<std::string> imgs_paths;
+    for (int i = 4; i < argc; i++)
+        imgs_paths.push_back(argv[i]);
+
+    AgisoftXMLReader agisoft_xml = AgisoftXMLReader(xml_path, imgs_paths);
 
     // load ply point cloud
     happly::PLYData plyIn(cloud_path);
@@ -173,14 +207,7 @@ int main (int argc, char *argv[])
 
     // initialize containers
     std::vector<int> defect;
-    std::vector<float> crack;
-    std::vector<float> spall;
-    std::vector<float> corr;
-    std::vector<float> effl;
-    std::vector<float> vege;
-    std::vector<float> cp;
-    std::vector<float> back;
-    std::vector<float> conf;
+    std::vector<float> crack, spall, corr, effl, vege, cp, back, conf, sharp, dist;
     for (int i = 0; i < xyz.size(); i++){
         defect.push_back(0);
         crack.push_back(0);
@@ -191,6 +218,8 @@ int main (int argc, char *argv[])
         cp.push_back(0);
         back.push_back(0);
         conf.push_back(0);
+        sharp.push_back(0);
+        dist.push_back(0);
     }
 
     std::cout << " caching done." << std::endl;
@@ -212,10 +241,10 @@ int main (int argc, char *argv[])
         Eigen::Vector3d normal(nx[i], ny[i], nz[i]);
 
         // compute distances to cameras
-        Eigen::VectorXd distances = (origins_mat.colwise() - point.head(3)).colwise().norm();
+        Eigen::VectorXd distances = (agisoft_xml.origins_mat.colwise() - point.head(3)).colwise().norm();
 
         // apply transformation
-        Eigen::VectorXd point_trans = (transforms_mat * point);
+        Eigen::VectorXd point_trans = (agisoft_xml.transforms_mat * point);
         Eigen::MatrixXd point_trans_tmp = Eigen::Map<Eigen::MatrixXd>(point_trans.data(), 4, point_trans.size() / 4);
         point_trans_tmp = point_trans_tmp.array().rowwise() /  point_trans_tmp.row(2).array();
         Eigen::MatrixXd point_trans_mat = point_trans_tmp.block(0,0,2,point_trans.size() / 4);
@@ -232,51 +261,68 @@ int main (int argc, char *argv[])
         Eigen::VectorXd row0 = point_trans_mat.row(0);
         Eigen::VectorXd row1 = point_trans_mat.row(1);
 
-        Eigen::VectorXd px = 1 + intrinsics_mat.array().col(0) * rr2.array() +
-                                 intrinsics_mat.array().col(1) * rr4.array() +
-                                 intrinsics_mat.array().col(2) * rr6.array() +
-                                 intrinsics_mat.array().col(3) * rr8.array();
+        Eigen::VectorXd px = 1 + agisoft_xml.intrinsics_mat.array().col(0) * rr2.array() +
+                                 agisoft_xml.intrinsics_mat.array().col(1) * rr4.array() +
+                                 agisoft_xml.intrinsics_mat.array().col(2) * rr6.array() +
+                                 agisoft_xml.intrinsics_mat.array().col(3) * rr8.array();
         px = row0.array() * px.array();
-        px = px.array() + intrinsics_mat.array().col(4) * (rr2.array() + 2 * row0.cwiseProduct(row0).array()) +
-                                   2 * intrinsics_mat.array().col(5) * row0.cwiseProduct(row1).array();
+        px = px.array() + agisoft_xml.intrinsics_mat.array().col(4) * (rr2.array() + 2 * row0.cwiseProduct(row0).array()) +
+                                   2 * agisoft_xml.intrinsics_mat.array().col(5) * row0.cwiseProduct(row1).array();
 
-        Eigen::VectorXd py = 1 + intrinsics_mat.array().col(0) * rr2.array() +
-                                 intrinsics_mat.array().col(1) * rr4.array() +
-                                 intrinsics_mat.array().col(2) * rr6.array() +
-                                 intrinsics_mat.array().col(3) * rr8.array();
+        Eigen::VectorXd py = 1 + agisoft_xml.intrinsics_mat.array().col(0) * rr2.array() +
+                                 agisoft_xml.intrinsics_mat.array().col(1) * rr4.array() +
+                                 agisoft_xml.intrinsics_mat.array().col(2) * rr6.array() +
+                                 agisoft_xml.intrinsics_mat.array().col(3) * rr8.array();
         py = row1.array() * py.array();
-        py = py.array() + intrinsics_mat.array().col(4) * (rr2.array() + 2 * row1.cwiseProduct(row1).array()) +
-                                   2 * intrinsics_mat.array().col(5) * row0.cwiseProduct(row1).array();
+        py = py.array() + agisoft_xml.intrinsics_mat.array().col(4) * (rr2.array() + 2 * row1.cwiseProduct(row1).array()) +
+                                   2 * agisoft_xml.intrinsics_mat.array().col(5) * row0.cwiseProduct(row1).array();
 
         // get uv coordinates
-        Eigen::VectorXd pu = intrinsics_mat.array().col(7) * 0.5 + intrinsics_mat.array().col(9) + px.array() * intrinsics_mat.array().col(6);
-        Eigen::VectorXd pv = intrinsics_mat.array().col(8) * 0.5 + intrinsics_mat.array().col(10) + py.array() * intrinsics_mat.array().col(6);
+        Eigen::VectorXd pu = agisoft_xml.intrinsics_mat.array().col(7) * 0.5 + agisoft_xml.intrinsics_mat.array().col(9) + px.array() * agisoft_xml.intrinsics_mat.array().col(6);
+        Eigen::VectorXd pv = agisoft_xml.intrinsics_mat.array().col(8) * 0.5 + agisoft_xml.intrinsics_mat.array().col(10) + py.array() * agisoft_xml.intrinsics_mat.array().col(6);
 
         // scale
         pu = pu * 0.5;
         pv = pv * 0.5;
 
         // determine uv mask
-        Eigen::VectorXd mask_uv = (0 < pu.array() && pu.array() < 0.5 * intrinsics_mat(0,7) &&
-                                   0 < pv.array() && pv.array() < 0.5 * intrinsics_mat(0,8)).cast<double>();
+        Eigen::VectorXd mask_uv = (0 < pu.array() && pu.array() < 0.5 * agisoft_xml.intrinsics_mat(0,7) &&
+                                   0 < pv.array() && pv.array() < 0.5 * agisoft_xml.intrinsics_mat(0,8)).cast<double>();
 
         // compute angle
-        Eigen::VectorXd nominator = directions_mat.transpose() * normal;
-        Eigen::VectorXd denominator = normal.norm() * directions_mat.colwise().norm();
+        Eigen::VectorXd nominator = agisoft_xml.directions_mat.transpose() * normal;
+        Eigen::VectorXd denominator = normal.norm() * agisoft_xml.directions_mat.colwise().norm();
         Eigen::VectorXd angles = nominator.array() / denominator.array();
         angles = angles.array().acos();
         angles = angles * (180.0/M_PI);
 
-        // determine angle mask
+        // angle weight
         Eigen::VectorXd mask_angles = (100 < angles.array() && angles.array() < 260).cast<double>();
         Eigen::VectorXd weight_angles = angles - ones * 180;
-        //weight_angles = Eigen::pow(80 / weight_angles.array(), 2);
-        weight_angles = -Eigen::abs(weight_angles.array());
+        weight_angles = weight_angles * M_PI / 2 / 180.0;
+        weight_angles = weight_angles.array().cos();
+        //weight_angles = 1 - weight_angles.array().abs();
+        //weight_angles = ones;
+
+        /*weight_angles = -Eigen::abs(weight_angles.array());
         weight_angles = Eigen::pow(1.5, weight_angles.array());
-        weight_angles = weight_angles.array() / weight_angles.array().mean();
+        weight_angles = weight_angles.array() * mask_angles.array();
+        weight_angles = weight_angles.array() / weight_angles.array().maxCoeff();*/
 
-        //mask_angles = mask_angles.array() * weight_angles.array();
+        // distance weight
+        Eigen::VectorXd weight_dist = distances;
+        weight_dist = weight_dist.array() * mask_angles.array();
+        weight_dist = weight_dist.array() * mask_uv.array();
+        weight_dist = ones * weight_dist.array().maxCoeff() - weight_dist;
+        weight_dist = weight_dist.cwiseProduct(weight_dist);
+        weight_dist = weight_dist.array() * mask_angles.array();
+        weight_dist = weight_dist.array() * mask_uv.array();
+        weight_dist = weight_dist / weight_dist.array().maxCoeff();
 
+        // container for accumulated weighted probabilities
+        Eigen::VectorXd accumulator = Eigen::VectorXd::Zero(imgs_paths.size()-1);
+        Eigen::MatrixXd values = Eigen::MatrixXd::Zero(pu.size(), imgs_paths.size()-1);
+        Eigen::VectorXd dep = Eigen::VectorXd::Zero(pu.size());
 
         // apply masks
         pu = mask_uv.array() * pu.array();
@@ -284,58 +330,46 @@ int main (int argc, char *argv[])
         pv = mask_uv.array() * pv.array();
         pv = mask_angles.array() * pv.array();
 
-        // compute distance weight
-        Eigen::VectorXd weight = distances;
-        weight = weight.array() * mask_angles.array();
-        weight = weight.array() * mask_uv.array();
-        weight = ones * weight.array().maxCoeff() - weight;
-        weight = weight.array() * mask_angles.array();
-        weight = weight.array() * mask_uv.array();
-        weight = weight.cwiseProduct(weight);
-        weight = weight / weight.sum();
-
-        // container for accumulated weighted probabilities
-        Eigen::VectorXd accumulator = Eigen::VectorXd::Zero(imgs_paths.size());
-        Eigen::MatrixXd values = Eigen::MatrixXd::Zero(pu.size(), imgs_paths.size());
-
         // get values from images
         for (int j = 0; j < pu.size(); j++ ){
-            if (weight[j] == 0)
+            if (weight_dist[j] == 0)
                 continue;
-            Eigen::VectorXd curr_val(imgs_paths.size());
-
-            for (int k = 0; k < imgs_paths.size(); k++){
-                curr_val(k) = double(int(images[j][k].at<uchar>(pv[j],pu[j])));///255;
+            Eigen::VectorXd curr_val(imgs_paths.size()-1);
+            for (int k = 0; k < imgs_paths.size()-1; k++){
+                curr_val(k) = double(int(agisoft_xml.images[j][k].at<uchar>(pv[j],pu[j])));///255;
             }
             values.row(j) = curr_val;
+            //dep(j) = (double) agisoft_xml.depths[j](pv[j],pu[j]);
         }
 
         // sharpness weight
         Eigen::VectorXd sharpness = values.block(0, 7, pu.size(), 1);
-        sharpness = sharpness.array() / sharpness.array().mean();
+        double maxSharpness = sharpness.array().maxCoeff();
+        sharpness = sharpness.array() / sharpness.array().maxCoeff();
+
+        // visibility check
+        Eigen::VectorXd depp = (dep.array() - distances.array()).abs();
+        depp = (depp.array() < 0.05).cast<double>();
 
         // apply weights
         values = values.array().colwise() * weight_angles.array();
-        values = values.array().colwise() * sharpness.array();
-        values = values.array().colwise() * weight.array();
+        //values = values.array().colwise() * sharpness.array();
+        values = values.array().colwise() * weight_dist.array();
 
         // sum over images
         accumulator = values.colwise().sum();
 
         // shrinked accumulator
-        Eigen::VectorXd accumulator_shrinked(imgs_paths.size()-1); // TODO: {accumulator[6], accumulator[5], ...
-        // manual reverse (didn't work: accumulator_shrinked = accumulator_shrinked.array().reverse();)
-        accumulator_shrinked[0] = accumulator[6];
-        accumulator_shrinked[1] = accumulator[5];
-        accumulator_shrinked[2] = accumulator[4];
-        accumulator_shrinked[3] = accumulator[3];
-        accumulator_shrinked[4] = accumulator[2];
-        accumulator_shrinked[5] = accumulator[1];
-        accumulator_shrinked[6] = accumulator[0];
+        Eigen::VectorXd accumulator_shrinked(imgs_paths.size()-2); // subtract sharpness and depth
+        accumulator_shrinked << accumulator[6], accumulator[5], accumulator[4],
+            accumulator[3], accumulator[2], accumulator[1], accumulator[0];
 
         // get argmax
-        Eigen::VectorXd::Index   maxIndex;
+        Eigen::VectorXd::Index maxIndex;
         double maxNorm = accumulator_shrinked.array().maxCoeff(&maxIndex);
+
+        // normalize
+        accumulator_shrinked = accumulator_shrinked.array() / accumulator_shrinked.array().sum();
 
         // defects
         defect[i] = maxIndex;
@@ -347,7 +381,11 @@ int main (int argc, char *argv[])
         cp[i] = accumulator_shrinked[1];
         back[i] = accumulator_shrinked[0];
 
+        sharp[i] = maxSharpness;
+        dist[i] = distances.array().mean();
+
         // confidence
+        maxNorm = accumulator_shrinked[maxIndex];
         accumulator_shrinked[maxIndex] = 0;
         conf[i] = maxNorm - accumulator_shrinked.array().maxCoeff();
     }
@@ -362,6 +400,9 @@ int main (int argc, char *argv[])
     plyIn.getElement("vertex").addProperty<float>("corrosion", corr);
     plyIn.getElement("vertex").addProperty<float>("spalling", spall);
     plyIn.getElement("vertex").addProperty<float>("crack", crack);
+    plyIn.getElement("vertex").addProperty<float>("max_sharpness", sharp);
+    plyIn.getElement("vertex").addProperty<float>("min_distances", dist);
+    // coverage
 
     plyIn.write(argv[3], happly::DataFormat::Binary);
 
