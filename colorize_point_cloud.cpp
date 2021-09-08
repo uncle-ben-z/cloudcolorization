@@ -19,6 +19,7 @@ class AgisoftXMLReader {
     std::string xml_path;
 
   public:
+    double chunk_scale;
     Eigen::MatrixXd origins_mat;
     Eigen::MatrixXd transforms_mat;
     Eigen::MatrixXd intrinsics_mat;
@@ -47,8 +48,8 @@ AgisoftXMLReader::AgisoftXMLReader(std::string xml_path, std::vector<std::string
             transform.erase(0, transform.find(delimiter) + delimiter.length());
         }
     // chunk scale
-    double scale = std::stod(chunk_transform_xml.child("scale").text().get());
-    chunk_transform = chunk_transform * scale;
+    chunk_scale = std::stod(chunk_transform_xml.child("scale").text().get());
+    chunk_transform = chunk_transform * chunk_scale;
     chunk_transform(3,3) = 1;
     // chunk translation
     std::string translation = chunk_transform_xml.child("translation").text().get();
@@ -87,7 +88,7 @@ AgisoftXMLReader::AgisoftXMLReader(std::string xml_path, std::vector<std::string
     // parse cameras
     for (pugi::xml_node camera: doc.child("document").child("chunk").child("cameras").children("camera")){
         // if transform available
-        if (camera.child("transform")){
+        if (camera.child("transform") && !camera.attribute("enabled")){
             std::string transform_xml = camera.child("transform").text().get();
 
             sensor_id.push_back(std::stoi(camera.attribute("sensor_id").value()));
@@ -133,11 +134,10 @@ AgisoftXMLReader::AgisoftXMLReader(std::string xml_path, std::vector<std::string
                         for (int k = 0; k < ncols; k++)
                             dep(j,k) = loaded_data[j*ncols+k];
                     depths.push_back(dep);
-                    std::cout << dep.array().maxCoeff() << std::endl;
                     continue;
                 }
                 else
-                    img_path = imgs_paths[i] + "/" + camera.attribute("label").value() + ".jpg";
+                    img_path = imgs_paths[i] + "/" + camera.attribute("label").value() + ".JPG";
 
                 cv::Mat img = cv::imread(img_path, cv::IMREAD_GRAYSCALE);
                 cv::resize(img, img, cv::Size(img.cols/2, img.rows/2), cv::INTER_LINEAR);
@@ -240,12 +240,13 @@ int main (int argc, char *argv[])
         Eigen::Vector4d point(xyz[i][0], xyz[i][1], xyz[i][2], 1);
         Eigen::Vector3d normal(nx[i], ny[i], nz[i]);
 
-        // compute distances to cameras
-        Eigen::VectorXd distances = (agisoft_xml.origins_mat.colwise() - point.head(3)).colwise().norm();
+        // compute distances to cameras DEPRECATED
+        //Eigen::VectorXd distances = (agisoft_xml.origins_mat.colwise() - point.head(3)).colwise().norm();
 
         // apply transformation
         Eigen::VectorXd point_trans = (agisoft_xml.transforms_mat * point);
         Eigen::MatrixXd point_trans_tmp = Eigen::Map<Eigen::MatrixXd>(point_trans.data(), 4, point_trans.size() / 4);
+        Eigen::MatrixXd point_trans_dist = point_trans_tmp.block(0,0,3,point_trans.size() / 4);
         point_trans_tmp = point_trans_tmp.array().rowwise() /  point_trans_tmp.row(2).array();
         Eigen::MatrixXd point_trans_mat = point_trans_tmp.block(0,0,2,point_trans.size() / 4);
 
@@ -276,6 +277,13 @@ int main (int argc, char *argv[])
         py = row1.array() * py.array();
         py = py.array() + agisoft_xml.intrinsics_mat.array().col(4) * (rr2.array() + 2 * row1.cwiseProduct(row1).array()) +
                                    2 * agisoft_xml.intrinsics_mat.array().col(5) * row0.cwiseProduct(row1).array();
+
+        // compute distance to pixel
+        Eigen::MatrixXd img_plane_uv = point_trans_dist;
+        img_plane_uv.row(0) = px;
+        img_plane_uv.row(1) = py;
+        img_plane_uv.row(2) = img_plane_uv.row(2) * 0;
+        Eigen::VectorXd distances = (img_plane_uv - point_trans_dist).colwise().norm() * agisoft_xml.chunk_scale;
 
         // get uv coordinates
         Eigen::VectorXd pu = agisoft_xml.intrinsics_mat.array().col(7) * 0.5 + agisoft_xml.intrinsics_mat.array().col(9) + px.array() * agisoft_xml.intrinsics_mat.array().col(6);
@@ -339,7 +347,8 @@ int main (int argc, char *argv[])
                 curr_val(k) = double(int(agisoft_xml.images[j][k].at<uchar>(pv[j],pu[j])));///255;
             }
             values.row(j) = curr_val;
-            //dep(j) = (double) agisoft_xml.depths[j](pv[j],pu[j]);
+            dep(j) = (double) agisoft_xml.depths[j](int(pv[j]/2),int(pu[j]/2)); // / 2 comes from 2 / 4, 2 for image downsizing and 4 from depthmap downsizing
+
         }
 
         // sharpness weight
@@ -348,10 +357,10 @@ int main (int argc, char *argv[])
         sharpness = sharpness.array() / sharpness.array().maxCoeff();
 
         // visibility check
-        Eigen::VectorXd depp = (dep.array() - distances.array()).abs();
-        depp = (depp.array() < 0.05).cast<double>();
+        Eigen::VectorXd visible = ((dep.array() - distances.array()).abs() < 0.05).cast<double>();
 
         // apply weights
+        values = values.array().colwise() * visible.array();
         values = values.array().colwise() * weight_angles.array();
         //values = values.array().colwise() * sharpness.array();
         values = values.array().colwise() * weight_dist.array();
@@ -362,7 +371,7 @@ int main (int argc, char *argv[])
         // shrinked accumulator
         Eigen::VectorXd accumulator_shrinked(imgs_paths.size()-2); // subtract sharpness and depth
         accumulator_shrinked << accumulator[6], accumulator[5], accumulator[4],
-            accumulator[3], accumulator[2], accumulator[1], accumulator[0];
+            accumulator[3], accumulator[2], accumulator[1], accumulator[0]; // .reverse()-function was unwilling
 
         // get argmax
         Eigen::VectorXd::Index maxIndex;
