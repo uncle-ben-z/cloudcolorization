@@ -31,10 +31,6 @@ make
 [out_path_for_resulting_point_cloud] \
 [paths_to_image_folders_of_defect_class] \
 ...
-[path_to_folder_with_sharpness_images]  
+[path_to_folder_with_sharpness_images] \
+[path_to_folder_with_depth_images]  
 ```
-
-
-### Optimization Potential
-- Use Eigen::Tensor (currently seemingly not natively supported by Eigen) instead of std::vector with images. Optionally try Eigen::Matrix of Eigen::Vector.
- 
