@@ -1,4 +1,5 @@
 #include <iostream>
+#include <filesystem>
 #include <pcl/io/pcd_io.h>
 #include <pcl/point_types.h>
 #include <chrono>
@@ -138,6 +139,8 @@ AgisoftXMLReader::AgisoftXMLReader(std::string xml_path, std::vector<std::string
                 }
                 else
                     img_path = imgs_paths[i] + "/" + camera.attribute("label").value() + ".JPG";
+                    if (!std::filesystem::exists(img_path))
+                        img_path = imgs_paths[i] + "/" + camera.attribute("label").value() + ".jpg";
 
                 cv::Mat img = cv::imread(img_path, cv::IMREAD_GRAYSCALE);
                 cv::resize(img, img, cv::Size(img.cols/2, img.rows/2), cv::INTER_LINEAR);
@@ -325,7 +328,7 @@ int main (int argc, char *argv[])
         weight_dist = weight_dist.cwiseProduct(weight_dist);
         weight_dist = weight_dist.array() * mask_angles.array();
         weight_dist = weight_dist.array() * mask_uv.array();
-        weight_dist = weight_dist / weight_dist.array().maxCoeff();
+        weight_dist = weight_dist / std::max(weight_dist.array().maxCoeff(), std::numeric_limits<double>::min());
 
         // container for accumulated weighted probabilities
         Eigen::VectorXd accumulator = Eigen::VectorXd::Zero(imgs_paths.size()-1);
@@ -378,7 +381,7 @@ int main (int argc, char *argv[])
         double maxNorm = accumulator_shrinked.array().maxCoeff(&maxIndex);
 
         // normalize
-        accumulator_shrinked = accumulator_shrinked.array() / accumulator_shrinked.array().sum();
+        accumulator_shrinked = accumulator_shrinked.array() / std::max(accumulator_shrinked.array().sum(), std::numeric_limits<double>::min());
 
         // defects
         defect[i] = maxIndex;
