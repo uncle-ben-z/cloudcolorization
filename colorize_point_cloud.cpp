@@ -1,3 +1,4 @@
+#define BOOST_BIND_NO_PLACEHOLDERS
 #include <iostream>
 #include <filesystem>
 #include <pcl/io/pcd_io.h>
@@ -13,7 +14,11 @@
 #include <pcl/io/ply_io.h>
 #include "happly.h"
 #include "cnpy.h"
+/*#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
+#define STRINGIFY(x) #x
+#define MACRO_STRINGIFY(x) STRINGIFY(x)*/
 
 class AgisoftXMLReader {
     Eigen::Matrix4d chunk_transform;
@@ -25,14 +30,16 @@ class AgisoftXMLReader {
     Eigen::MatrixXd transforms_mat;
     Eigen::MatrixXd intrinsics_mat;
     Eigen::MatrixXd directions_mat;
+    std::vector<std::string> labels;
     std::vector<std::vector<cv::Mat>> images;
     std::vector<Eigen::MatrixXf> depths;
     AgisoftXMLReader(std::string, std::vector<std::string>);
+    void cache_images(std::vector<std::string>);
+    std::tuple<Eigen::VectorXd, Eigen::VectorXd, Eigen::VectorXd> compute_uv(Eigen::Vector4d, Eigen::Vector3d);
 };
 
 
 AgisoftXMLReader::AgisoftXMLReader(std::string xml_path, std::vector<std::string> imgs_paths){
-
     // parse agisoft xml
     pugi::xml_document doc;
     pugi::xml_parse_result result = doc.load_file(xml_path.c_str());
@@ -84,25 +91,23 @@ AgisoftXMLReader::AgisoftXMLReader(std::string xml_path, std::vector<std::string
     std::vector<Eigen::Vector3d> directions;
     std::vector<int> sensor_id;
 
-    std::cout << "Caching images..." << std::flush;
-
     // parse cameras
     for (pugi::xml_node camera: doc.child("document").child("chunk").child("cameras").children("camera")){
         // if transform available
         if (camera.child("transform") && !camera.attribute("enabled")){
-            std::string transform_xml = camera.child("transform").text().get();
 
+            // camera label and sensor (intrinsics)
+            labels.push_back(camera.attribute("label").value());
             sensor_id.push_back(std::stoi(camera.attribute("sensor_id").value()));
 
-            Eigen::Matrix4d transform = Eigen::Matrix4d::Identity();
-
             // parse transform to matrix
+            std::string transform_xml = camera.child("transform").text().get();
+            Eigen::Matrix4d transform = Eigen::Matrix4d::Identity();
             for (int i = 0; i < 4; i++)
                 for (int j = 0; j < 4; j++){
                     transform(i,j) = std::stod(transform_xml.substr(0, transform_xml.find(delimiter)));
                     transform_xml.erase(0, transform_xml.find(delimiter) + delimiter.length());
                 }
-
             transform = transform.inverse().eval();
             transforms.push_back(transform * chunk_transform.inverse().eval());
 
@@ -117,37 +122,6 @@ AgisoftXMLReader::AgisoftXMLReader(std::string xml_path, std::vector<std::string
             z(2) = -1;
             ret = orig - origin * z;
             directions.push_back(ret.block(0,0,3,1));
-
-            // cache images
-            std::vector<cv::Mat> curr_images;
-            for (int i = 0; i < imgs_paths.size(); i++){
-                std::string img_path;
-                if (imgs_paths[i].find("_mask") != std::string::npos)
-                    img_path = imgs_paths[i] + "/" + camera.attribute("label").value() + ".png";
-                else if (imgs_paths[i].find("_depth") != std::string::npos){
-                    img_path = imgs_paths[i] + "/" + camera.attribute("label").value() + ".npy";
-                    cnpy::NpyArray arr = cnpy::npy_load(img_path);
-                    float* loaded_data = arr.data<float>();
-                    size_t nrows = arr.shape[0];
-                    size_t ncols = arr.shape[1];
-                    Eigen::MatrixXf dep(nrows, ncols);
-                    for (int j = 0; j < nrows; j++)
-                        for (int k = 0; k < ncols; k++)
-                            dep(j,k) = loaded_data[j*ncols+k];
-                    depths.push_back(dep);
-                    continue;
-                }
-                else
-                    img_path = imgs_paths[i] + "/" + camera.attribute("label").value() + ".JPG";
-                    if (!std::filesystem::exists(img_path))
-                        img_path = imgs_paths[i] + "/" + camera.attribute("label").value() + ".jpg";
-
-                cv::Mat img = cv::imread(img_path, cv::IMREAD_GRAYSCALE);
-                cv::resize(img, img, cv::Size(img.cols/2, img.rows/2), cv::INTER_LINEAR);
-                curr_images.push_back(img);
-            }
-
-            images.push_back(curr_images);
 
             //if (transforms.size() == 100)
             //    break;
@@ -173,18 +147,111 @@ AgisoftXMLReader::AgisoftXMLReader(std::string xml_path, std::vector<std::string
 }
 
 
-int main (int argc, char *argv[])
-{
+void AgisoftXMLReader::cache_images(std::vector<std::string> imgs_paths){
+    std::cout << "Caching images..." << std::flush;
+
+    for(std::string label : this->labels){
+        // cache images
+        std::vector<cv::Mat> curr_images;
+        for (int i = 0; i < imgs_paths.size(); i++){
+            std::string img_path;
+            if (imgs_paths[i].find("_mask") != std::string::npos)
+                img_path = imgs_paths[i] + "/" + label + ".png";
+            else if (imgs_paths[i].find("_depth") != std::string::npos){
+                img_path = imgs_paths[i] + "/" + label + ".npy";
+                cnpy::NpyArray arr = cnpy::npy_load(img_path);
+                float* loaded_data = arr.data<float>();
+                size_t nrows = arr.shape[0];
+                size_t ncols = arr.shape[1];
+                Eigen::MatrixXf dep(nrows, ncols);
+                for (int j = 0; j < nrows; j++)
+                    for (int k = 0; k < ncols; k++)
+                        dep(j,k) = loaded_data[j*ncols+k];
+                depths.push_back(dep);
+                continue;
+            }
+            else
+                img_path = imgs_paths[i] + "/" + label + ".JPG";
+                if (!std::filesystem::exists(img_path))
+                    img_path = imgs_paths[i] + "/" + label + ".jpg";
+
+            cv::Mat img = cv::imread(img_path, cv::IMREAD_GRAYSCALE);
+            cv::resize(img, img, cv::Size(img.cols/2, img.rows/2), cv::INTER_LINEAR);
+            curr_images.push_back(img);
+        }
+
+        images.push_back(curr_images);
+    }
+    std::cout << " caching done." << std::endl;
+}
+
+
+std::tuple<Eigen::VectorXd, Eigen::VectorXd, Eigen::VectorXd> AgisoftXMLReader::compute_uv(Eigen::Vector4d point, Eigen::Vector3d normal){
+    // compute distances to cameras DEPRECATED
+    //Eigen::VectorXd distances = (agisoft_xml.origins_mat.colwise() - point.head(3)).colwise().norm();
+
+    // apply transformation
+    Eigen::VectorXd point_trans = (this->transforms_mat * point);
+    Eigen::MatrixXd point_trans_tmp = Eigen::Map<Eigen::MatrixXd>(point_trans.data(), 4, point_trans.size() / 4);
+    Eigen::MatrixXd point_trans_dist = point_trans_tmp.block(0,0,3,point_trans.size() / 4);
+    point_trans_tmp = point_trans_tmp.array().rowwise() /  point_trans_tmp.row(2).array();
+    Eigen::MatrixXd point_trans_mat = point_trans_tmp.block(0,0,2,point_trans.size() / 4);
+
+    // correct for radial distortion
+    Eigen::VectorXd rr = point_trans_mat.colwise().norm();
+    Eigen::VectorXd ones = rr;
+    ones.setOnes();
+
+    Eigen::VectorXd rr2 = rr.cwiseProduct(rr);
+    Eigen::VectorXd rr4 = rr2.cwiseProduct(rr2);
+    Eigen::VectorXd rr6 = rr2.cwiseProduct(rr2).cwiseProduct(rr2);
+    Eigen::VectorXd rr8 = rr4.cwiseProduct(rr4);
+    Eigen::VectorXd row0 = point_trans_mat.row(0);
+    Eigen::VectorXd row1 = point_trans_mat.row(1);
+
+    Eigen::VectorXd px = 1 + this->intrinsics_mat.array().col(0) * rr2.array() +
+                             this->intrinsics_mat.array().col(1) * rr4.array() +
+                             this->intrinsics_mat.array().col(2) * rr6.array() +
+                             this->intrinsics_mat.array().col(3) * rr8.array();
+    px = row0.array() * px.array();
+    px = px.array() + this->intrinsics_mat.array().col(4) * (rr2.array() + 2 * row0.cwiseProduct(row0).array()) +
+                               2 * this->intrinsics_mat.array().col(5) * row0.cwiseProduct(row1).array();
+
+    Eigen::VectorXd py = 1 + this->intrinsics_mat.array().col(0) * rr2.array() +
+                             this->intrinsics_mat.array().col(1) * rr4.array() +
+                             this->intrinsics_mat.array().col(2) * rr6.array() +
+                             this->intrinsics_mat.array().col(3) * rr8.array();
+    py = row1.array() * py.array();
+    py = py.array() + this->intrinsics_mat.array().col(4) * (rr2.array() + 2 * row1.cwiseProduct(row1).array()) +
+                               2 * this->intrinsics_mat.array().col(5) * row0.cwiseProduct(row1).array();
+
+    // compute distance to pixel
+    Eigen::MatrixXd img_plane_uv = point_trans_dist;
+    img_plane_uv.row(0) = px;
+    img_plane_uv.row(1) = py;
+    img_plane_uv.row(2) = img_plane_uv.row(2) * 0;
+    Eigen::VectorXd distances = (img_plane_uv - point_trans_dist).colwise().norm() * this->chunk_scale;
+
+    // get uv coordinates
+    Eigen::VectorXd pu = this->intrinsics_mat.array().col(7) * 0.5 + this->intrinsics_mat.array().col(9) + px.array() * this->intrinsics_mat.array().col(6);
+    Eigen::VectorXd pv = this->intrinsics_mat.array().col(8) * 0.5 + this->intrinsics_mat.array().col(10) + py.array() * this->intrinsics_mat.array().col(6);
+
+    return {pu, pv, distances};
+}
+
+
+void colorize_point_cloud(const std::vector<std::string> &args){
     // paramters
-    std::string xml_path = argv[1];
-    std::string cloud_path = argv[2];
+    std::string xml_path = args[0];
+    std::string cloud_path = args[1];
 
     // image folder paths
     std::vector<std::string> imgs_paths;
-    for (int i = 4; i < argc; i++)
-        imgs_paths.push_back(argv[i]);
+    for (int i = 3; i < args.size(); i++)
+        imgs_paths.push_back(args[i]);
 
     AgisoftXMLReader agisoft_xml = AgisoftXMLReader(xml_path, imgs_paths);
+    agisoft_xml.cache_images(imgs_paths);
 
     // load ply point cloud
     happly::PLYData plyIn(cloud_path);
@@ -202,30 +269,11 @@ int main (int argc, char *argv[])
         nx = plyIn.getElement("vertex").getProperty<double>("normal_x");
         ny = plyIn.getElement("vertex").getProperty<double>("normal_y");
         nz = plyIn.getElement("vertex").getProperty<double>("normal_z");
-        /*plyIn.getElement("vertex").addProperty<float>("nx", nx);
-        plyIn.getElement("vertex").addProperty<float>("ny", ny);
-        plyIn.getElement("vertex").addProperty<float>("nz", nz);*/
     }
-
 
     // initialize containers
-    std::vector<int> defect;
-    std::vector<float> crack, spall, corr, effl, vege, cp, back, conf, sharp, dist;
-    for (int i = 0; i < xyz.size(); i++){
-        defect.push_back(0);
-        crack.push_back(0);
-        spall.push_back(0);
-        corr.push_back(0);
-        effl.push_back(0);
-        vege.push_back(0);
-        cp.push_back(0);
-        back.push_back(0);
-        conf.push_back(0);
-        sharp.push_back(0);
-        dist.push_back(0);
-    }
-
-    std::cout << " caching done." << std::endl;
+    std::vector<int> defect(xyz.size(),0);
+    std::vector<float> crack(xyz.size(),0), spall(xyz.size(),0), corr(xyz.size(),0), effl(xyz.size(),0), vege(xyz.size(),0), cp(xyz.size(),0), back(xyz.size(),0), conf(xyz.size(),0), sharp(xyz.size(),0), dist(xyz.size(),0);
 
     // start timer
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
@@ -243,54 +291,11 @@ int main (int argc, char *argv[])
         Eigen::Vector4d point(xyz[i][0], xyz[i][1], xyz[i][2], 1);
         Eigen::Vector3d normal(nx[i], ny[i], nz[i]);
 
-        // compute distances to cameras DEPRECATED
-        //Eigen::VectorXd distances = (agisoft_xml.origins_mat.colwise() - point.head(3)).colwise().norm();
+        // compute image coordinates
+        auto [pu, pv, distances] = agisoft_xml.compute_uv(point, normal);
 
-        // apply transformation
-        Eigen::VectorXd point_trans = (agisoft_xml.transforms_mat * point);
-        Eigen::MatrixXd point_trans_tmp = Eigen::Map<Eigen::MatrixXd>(point_trans.data(), 4, point_trans.size() / 4);
-        Eigen::MatrixXd point_trans_dist = point_trans_tmp.block(0,0,3,point_trans.size() / 4);
-        point_trans_tmp = point_trans_tmp.array().rowwise() /  point_trans_tmp.row(2).array();
-        Eigen::MatrixXd point_trans_mat = point_trans_tmp.block(0,0,2,point_trans.size() / 4);
-
-        // correct for radial distortion
-        Eigen::VectorXd rr = point_trans_mat.colwise().norm();
-        Eigen::VectorXd ones = rr;
+        Eigen::VectorXd ones = distances;
         ones.setOnes();
-
-        Eigen::VectorXd rr2 = rr.cwiseProduct(rr);
-        Eigen::VectorXd rr4 = rr2.cwiseProduct(rr2);
-        Eigen::VectorXd rr6 = rr2.cwiseProduct(rr2).cwiseProduct(rr2);
-        Eigen::VectorXd rr8 = rr4.cwiseProduct(rr4);
-        Eigen::VectorXd row0 = point_trans_mat.row(0);
-        Eigen::VectorXd row1 = point_trans_mat.row(1);
-
-        Eigen::VectorXd px = 1 + agisoft_xml.intrinsics_mat.array().col(0) * rr2.array() +
-                                 agisoft_xml.intrinsics_mat.array().col(1) * rr4.array() +
-                                 agisoft_xml.intrinsics_mat.array().col(2) * rr6.array() +
-                                 agisoft_xml.intrinsics_mat.array().col(3) * rr8.array();
-        px = row0.array() * px.array();
-        px = px.array() + agisoft_xml.intrinsics_mat.array().col(4) * (rr2.array() + 2 * row0.cwiseProduct(row0).array()) +
-                                   2 * agisoft_xml.intrinsics_mat.array().col(5) * row0.cwiseProduct(row1).array();
-
-        Eigen::VectorXd py = 1 + agisoft_xml.intrinsics_mat.array().col(0) * rr2.array() +
-                                 agisoft_xml.intrinsics_mat.array().col(1) * rr4.array() +
-                                 agisoft_xml.intrinsics_mat.array().col(2) * rr6.array() +
-                                 agisoft_xml.intrinsics_mat.array().col(3) * rr8.array();
-        py = row1.array() * py.array();
-        py = py.array() + agisoft_xml.intrinsics_mat.array().col(4) * (rr2.array() + 2 * row1.cwiseProduct(row1).array()) +
-                                   2 * agisoft_xml.intrinsics_mat.array().col(5) * row0.cwiseProduct(row1).array();
-
-        // compute distance to pixel
-        Eigen::MatrixXd img_plane_uv = point_trans_dist;
-        img_plane_uv.row(0) = px;
-        img_plane_uv.row(1) = py;
-        img_plane_uv.row(2) = img_plane_uv.row(2) * 0;
-        Eigen::VectorXd distances = (img_plane_uv - point_trans_dist).colwise().norm() * agisoft_xml.chunk_scale;
-
-        // get uv coordinates
-        Eigen::VectorXd pu = agisoft_xml.intrinsics_mat.array().col(7) * 0.5 + agisoft_xml.intrinsics_mat.array().col(9) + px.array() * agisoft_xml.intrinsics_mat.array().col(6);
-        Eigen::VectorXd pv = agisoft_xml.intrinsics_mat.array().col(8) * 0.5 + agisoft_xml.intrinsics_mat.array().col(10) + py.array() * agisoft_xml.intrinsics_mat.array().col(6);
 
         // scale
         pu = pu * 0.5;
@@ -412,13 +417,49 @@ int main (int argc, char *argv[])
     plyIn.getElement("vertex").addProperty<float>("corrosion", corr);
     plyIn.getElement("vertex").addProperty<float>("spalling", spall);
     plyIn.getElement("vertex").addProperty<float>("crack", crack);
-    plyIn.getElement("vertex").addProperty<float>("max_sharpness", sharp);
-    plyIn.getElement("vertex").addProperty<float>("min_distances", dist);
+    //plyIn.getElement("vertex").addProperty<float>("max_sharpness", sharp);
+    //plyIn.getElement("vertex").addProperty<float>("min_distances", dist);
     // coverage
 
-    plyIn.write(argv[3], happly::DataFormat::Binary);
+    plyIn.write(args[2], happly::DataFormat::Binary);
 
     std::cout << std::endl;
+}
 
+int main (int argc, char *argv[]){
+    // read commandline arguments
+    std::vector<std::string> args;
+    for (int i = 1; i < argc; i++)
+        args.push_back(argv[i]);
+
+    colorize_point_cloud(args);
     return (0);
 }
+
+/*
+PYBIND11_MODULE(colorize_point_cloud, m) {
+    pybind11::class_<AgisoftXMLReader>(m, "AgisoftXMLReader")
+        .def(py::init<const std::string &, std::vector<std::string> &>());
+
+    m.doc() = R"pbdoc(
+        Pybind11 example plugin
+        -----------------------
+        .. currentmodule:: colorize_point_cloud
+        .. autosummary::
+           :toctree: _generate
+           add
+           subtract
+    )pbdoc";
+
+    m.def("colorize_point_cloud", &colorize_point_cloud, R"pbdoc(
+        Add main
+        Some other explanation about the add function.
+    )pbdoc");
+
+
+#ifdef VERSION_INFO
+    m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);
+#else
+    m.attr("__version__") = "dev";
+#endif
+}*/
