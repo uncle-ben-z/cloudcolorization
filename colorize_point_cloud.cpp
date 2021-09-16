@@ -14,32 +14,41 @@
 #include <pcl/io/ply_io.h>
 #include "happly.h"
 #include "cnpy.h"
-/*#include <pybind11/pybind11.h>
+#include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
 #define STRINGIFY(x) #x
-#define MACRO_STRINGIFY(x) STRINGIFY(x)*/
+#define MACRO_STRINGIFY(x) STRINGIFY(x)
 
-class AgisoftXMLReader {
-    Eigen::Matrix4d chunk_transform;
+class CloudColorizer {
     std::string xml_path;
 
-  public:
     double chunk_scale;
+    Eigen::Matrix4d chunk_transform;
+
+    std::vector<std::string> labels;
+    Eigen::MatrixXd intrinsics_mat;
     Eigen::MatrixXd origins_mat;
     Eigen::MatrixXd transforms_mat;
-    Eigen::MatrixXd intrinsics_mat;
+
+  public:
     Eigen::MatrixXd directions_mat;
-    std::vector<std::string> labels;
     std::vector<std::vector<cv::Mat>> images;
     std::vector<Eigen::MatrixXf> depths;
-    AgisoftXMLReader(std::string, std::vector<std::string>);
-    void cache_images(std::vector<std::string>);
-    std::tuple<Eigen::VectorXd, Eigen::VectorXd, Eigen::VectorXd> compute_uv(Eigen::Vector4d, Eigen::Vector3d);
+    std::vector<cv::Mat> sharpness;
+
+    CloudColorizer(std::string);
+    void parse_agisoft_xml(std::string);
+    void cache_images(std::vector<std::string>, float scale);
+    std::tuple<Eigen::VectorXd, Eigen::VectorXd, Eigen::VectorXd, Eigen::VectorXd>
+        compute_uv(Eigen::Vector4d, Eigen::Vector3d, float);
 };
 
+CloudColorizer::CloudColorizer(std::string xml_path){
+    this->parse_agisoft_xml(xml_path);
+}
 
-AgisoftXMLReader::AgisoftXMLReader(std::string xml_path, std::vector<std::string> imgs_paths){
+void CloudColorizer::parse_agisoft_xml(std::string xml_path){
     // parse agisoft xml
     pugi::xml_document doc;
     pugi::xml_parse_result result = doc.load_file(xml_path.c_str());
@@ -146,8 +155,7 @@ AgisoftXMLReader::AgisoftXMLReader(std::string xml_path, std::vector<std::string
         intrinsics_mat.row(i) = intrinsics[sensor_id[i]];
 }
 
-
-void AgisoftXMLReader::cache_images(std::vector<std::string> imgs_paths){
+void CloudColorizer::cache_images(std::vector<std::string> imgs_paths, float scale){
     std::cout << "Caching images..." << std::flush;
 
     for(std::string label : this->labels){
@@ -155,8 +163,11 @@ void AgisoftXMLReader::cache_images(std::vector<std::string> imgs_paths){
         std::vector<cv::Mat> curr_images;
         for (int i = 0; i < imgs_paths.size(); i++){
             std::string img_path;
+
             if (imgs_paths[i].find("_mask") != std::string::npos)
                 img_path = imgs_paths[i] + "/" + label + ".png";
+
+            // special case: depth map as npy
             else if (imgs_paths[i].find("_depth") != std::string::npos){
                 img_path = imgs_paths[i] + "/" + label + ".npy";
                 cnpy::NpyArray arr = cnpy::npy_load(img_path);
@@ -176,19 +187,20 @@ void AgisoftXMLReader::cache_images(std::vector<std::string> imgs_paths){
                     img_path = imgs_paths[i] + "/" + label + ".jpg";
 
             cv::Mat img = cv::imread(img_path, cv::IMREAD_GRAYSCALE);
-            cv::resize(img, img, cv::Size(img.cols/2, img.rows/2), cv::INTER_LINEAR);
+            cv::resize(img, img, cv::Size(int(scale * img.cols), int(scale * img.rows)), cv::INTER_LINEAR);
+            if (imgs_paths[i].find("_sharp") != std::string::npos)
+                sharpness.push_back(img);
             curr_images.push_back(img);
-        }
 
+        }
         images.push_back(curr_images);
     }
     std::cout << " caching done." << std::endl;
 }
 
 
-std::tuple<Eigen::VectorXd, Eigen::VectorXd, Eigen::VectorXd> AgisoftXMLReader::compute_uv(Eigen::Vector4d point, Eigen::Vector3d normal){
-    // compute distances to cameras DEPRECATED
-    //Eigen::VectorXd distances = (agisoft_xml.origins_mat.colwise() - point.head(3)).colwise().norm();
+std::tuple<Eigen::VectorXd, Eigen::VectorXd, Eigen::VectorXd, Eigen::VectorXd> CloudColorizer::
+    compute_uv(Eigen::Vector4d point, Eigen::Vector3d normal, float scale){
 
     // apply transformation
     Eigen::VectorXd point_trans = (this->transforms_mat * point);
@@ -226,17 +238,26 @@ std::tuple<Eigen::VectorXd, Eigen::VectorXd, Eigen::VectorXd> AgisoftXMLReader::
                                2 * this->intrinsics_mat.array().col(5) * row0.cwiseProduct(row1).array();
 
     // compute distance to pixel
-    Eigen::MatrixXd img_plane_uv = point_trans_dist;
+    Eigen::MatrixXd img_plane_uv = Eigen::MatrixXd::Zero(3, px.size());
     img_plane_uv.row(0) = px;
     img_plane_uv.row(1) = py;
-    img_plane_uv.row(2) = img_plane_uv.row(2) * 0;
     Eigen::VectorXd distances = (img_plane_uv - point_trans_dist).colwise().norm() * this->chunk_scale;
 
     // get uv coordinates
-    Eigen::VectorXd pu = this->intrinsics_mat.array().col(7) * 0.5 + this->intrinsics_mat.array().col(9) + px.array() * this->intrinsics_mat.array().col(6);
-    Eigen::VectorXd pv = this->intrinsics_mat.array().col(8) * 0.5 + this->intrinsics_mat.array().col(10) + py.array() * this->intrinsics_mat.array().col(6);
+    Eigen::VectorXd pu = this->intrinsics_mat.array().col(7) * 0.5 +
+                         this->intrinsics_mat.array().col(9) + px.array() * this->intrinsics_mat.array().col(6);
+    Eigen::VectorXd pv = this->intrinsics_mat.array().col(8) * 0.5 +
+                         this->intrinsics_mat.array().col(10) + py.array() * this->intrinsics_mat.array().col(6);
 
-    return {pu, pv, distances};
+    // scale
+    pu = pu * scale;
+    pv = pv * scale;
+
+    // determine uv mask
+    Eigen::VectorXd mask = (0 < pu.array() && pu.array() <  scale * this->intrinsics_mat(0,7) &&
+                               0 < pv.array() && pv.array() < scale * this->intrinsics_mat(0,8)).cast<double>();
+
+    return {pu, pv, distances, mask};
 }
 
 
@@ -250,30 +271,31 @@ void colorize_point_cloud(const std::vector<std::string> &args){
     for (int i = 3; i < args.size(); i++)
         imgs_paths.push_back(args[i]);
 
-    AgisoftXMLReader agisoft_xml = AgisoftXMLReader(xml_path, imgs_paths);
-    agisoft_xml.cache_images(imgs_paths);
+    float scale = 0.5;
+    CloudColorizer cloud_colorizer = CloudColorizer(xml_path);
+    cloud_colorizer.cache_images(imgs_paths, scale);
 
     // load ply point cloud
-    happly::PLYData plyIn(cloud_path);
-    std::vector<std::array<double, 3>> xyz = plyIn.getVertexPositions();
+    happly::PLYData ply(cloud_path);
+    std::vector<std::array<double, 3>> xyz = ply.getVertexPositions();
 
     // get normals
-    std::vector<double> nx;
-    std::vector<double> ny;
-    std::vector<double> nz;
+    std::vector<double> nx, ny, nz;
     try{
-        nx = plyIn.getElement("vertex").getProperty<double>("nx");
-        ny = plyIn.getElement("vertex").getProperty<double>("ny");
-        nz = plyIn.getElement("vertex").getProperty<double>("nz");
+        nx = ply.getElement("vertex").getProperty<double>("nx");
+        ny = ply.getElement("vertex").getProperty<double>("ny");
+        nz = ply.getElement("vertex").getProperty<double>("nz");
     } catch (const std::exception& e) {
-        nx = plyIn.getElement("vertex").getProperty<double>("normal_x");
-        ny = plyIn.getElement("vertex").getProperty<double>("normal_y");
-        nz = plyIn.getElement("vertex").getProperty<double>("normal_z");
+        nx = ply.getElement("vertex").getProperty<double>("normal_x");
+        ny = ply.getElement("vertex").getProperty<double>("normal_y");
+        nz = ply.getElement("vertex").getProperty<double>("normal_z");
     }
 
     // initialize containers
     std::vector<int> defect(xyz.size(),0);
-    std::vector<float> crack(xyz.size(),0), spall(xyz.size(),0), corr(xyz.size(),0), effl(xyz.size(),0), vege(xyz.size(),0), cp(xyz.size(),0), back(xyz.size(),0), conf(xyz.size(),0), sharp(xyz.size(),0), dist(xyz.size(),0);
+    std::vector<float> crack(xyz.size(),0), spall(xyz.size(),0), corr(xyz.size(),0), effl(xyz.size(),0),
+                       vege(xyz.size(),0), cp(xyz.size(),0), back(xyz.size(),0), conf(xyz.size(),0),
+                       sharp(xyz.size(),0), dist(xyz.size(),0);
 
     // start timer
     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
@@ -284,7 +306,8 @@ void colorize_point_cloud(const std::vector<std::string> &args){
         // some console output
         if (omp_get_thread_num() == 0 && i % int(xyz.size()/16/100) == 0 || i == (xyz.size()/16-1)){
             std::cout << "\t\r" << int(100*i/(xyz.size()/16-1)) << "% of " << xyz.size() << " | Time: " <<
-                std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - begin).count() << "sec " << std::flush;
+                std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - begin).count()
+                << "sec " << std::flush;
         }
 
         // get coordinates and normals
@@ -292,29 +315,21 @@ void colorize_point_cloud(const std::vector<std::string> &args){
         Eigen::Vector3d normal(nx[i], ny[i], nz[i]);
 
         // compute image coordinates
-        auto [pu, pv, distances] = agisoft_xml.compute_uv(point, normal);
+        auto [pu, pv, distances, uv_mask] = cloud_colorizer.compute_uv(point, normal, scale);
 
         Eigen::VectorXd ones = distances;
         ones.setOnes();
 
-        // scale
-        pu = pu * 0.5;
-        pv = pv * 0.5;
-
-        // determine uv mask
-        Eigen::VectorXd mask_uv = (0 < pu.array() && pu.array() < 0.5 * agisoft_xml.intrinsics_mat(0,7) &&
-                                   0 < pv.array() && pv.array() < 0.5 * agisoft_xml.intrinsics_mat(0,8)).cast<double>();
-
         // compute angle
-        Eigen::VectorXd nominator = agisoft_xml.directions_mat.transpose() * normal;
-        Eigen::VectorXd denominator = normal.norm() * agisoft_xml.directions_mat.colwise().norm();
+        Eigen::VectorXd nominator = cloud_colorizer.directions_mat.transpose() * normal;
+        Eigen::VectorXd denominator = normal.norm() * cloud_colorizer.directions_mat.colwise().norm();
         Eigen::VectorXd angles = nominator.array() / denominator.array();
         angles = angles.array().acos();
         angles = angles * (180.0/M_PI);
 
         // angle weight
         Eigen::VectorXd mask_angles = (100 < angles.array() && angles.array() < 260).cast<double>();
-        Eigen::VectorXd weight_angles = angles - ones * 180;
+        Eigen::VectorXd weight_angles = angles.array() - 180;
         weight_angles = weight_angles * M_PI / 2 / 180.0;
         weight_angles = weight_angles.array().cos();
         //weight_angles = 1 - weight_angles.array().abs();
@@ -328,39 +343,45 @@ void colorize_point_cloud(const std::vector<std::string> &args){
         // distance weight
         Eigen::VectorXd weight_dist = distances;
         weight_dist = weight_dist.array() * mask_angles.array();
-        weight_dist = weight_dist.array() * mask_uv.array();
+        weight_dist = weight_dist.array() * uv_mask.array();
         weight_dist = ones * weight_dist.array().maxCoeff() - weight_dist;
         weight_dist = weight_dist.cwiseProduct(weight_dist);
         weight_dist = weight_dist.array() * mask_angles.array();
-        weight_dist = weight_dist.array() * mask_uv.array();
+        weight_dist = weight_dist.array() * uv_mask.array();
         weight_dist = weight_dist / std::max(weight_dist.array().maxCoeff(), std::numeric_limits<double>::min());
 
         // container for accumulated weighted probabilities
-        Eigen::VectorXd accumulator = Eigen::VectorXd::Zero(imgs_paths.size()-1);
-        Eigen::MatrixXd values = Eigen::MatrixXd::Zero(pu.size(), imgs_paths.size()-1);
+        Eigen::VectorXd accumulator = Eigen::VectorXd::Zero(imgs_paths.size()-2);
+        Eigen::MatrixXd values = Eigen::MatrixXd::Zero(pu.size(), imgs_paths.size()-2);
         Eigen::VectorXd dep = Eigen::VectorXd::Zero(pu.size());
+        Eigen::VectorXd shar = Eigen::VectorXd::Zero(pu.size());
 
         // apply masks
-        pu = mask_uv.array() * pu.array();
+        pu = uv_mask.array() * pu.array();
         pu = mask_angles.array() * pu.array();
-        pv = mask_uv.array() * pv.array();
+        pv = uv_mask.array() * pv.array();
         pv = mask_angles.array() * pv.array();
 
         // get values from images
         for (int j = 0; j < pu.size(); j++ ){
             if (weight_dist[j] == 0)
                 continue;
-            Eigen::VectorXd curr_val(imgs_paths.size()-1);
-            for (int k = 0; k < imgs_paths.size()-1; k++){
-                curr_val(k) = double(int(agisoft_xml.images[j][k].at<uchar>(pv[j],pu[j])));///255;
-            }
+            Eigen::VectorXd curr_val(imgs_paths.size()-2);
+            for (int k = 0; k < imgs_paths.size()-2; k++)
+                curr_val(k) = double(int(cloud_colorizer.images[j][k].at<uchar>(pv[j],pu[j])));///255;
             values.row(j) = curr_val;
-            dep(j) = (double) agisoft_xml.depths[j](int(pv[j]/2),int(pu[j]/2)); // / 2 comes from 2 / 4, 2 for image downsizing and 4 from depthmap downsizing
+        }
 
+        // get depth and sharpness
+        for (int j = 0; j < pu.size(); j++ ){
+            if (weight_dist[j] == 0)
+                continue;
+            dep(j) = double(cloud_colorizer.depths[j](int(pv[j]/2),int(pu[j]/2))); // / 2 comes from 2 / 4, 2 for image downsizing and 4 from depthmap downsizing
+            shar(j) = double(int(cloud_colorizer.sharpness[j].at<uchar>(pv[j],pu[j])));
         }
 
         // sharpness weight
-        Eigen::VectorXd sharpness = values.block(0, 7, pu.size(), 1);
+        Eigen::VectorXd sharpness = shar;//values.block(0, 7, pu.size(), 1);
         double maxSharpness = sharpness.array().maxCoeff();
         sharpness = sharpness.array() / sharpness.array().maxCoeff();
 
@@ -408,20 +429,20 @@ void colorize_point_cloud(const std::vector<std::string> &args){
     }
 
     // export ply
-    plyIn.getElement("vertex").addProperty<int>("defect", defect);
-    plyIn.getElement("vertex").addProperty<float>("confidence", conf);
-    plyIn.getElement("vertex").addProperty<float>("background", back);
-    plyIn.getElement("vertex").addProperty<float>("control_point", cp);
-    plyIn.getElement("vertex").addProperty<float>("vegetation", vege);
-    plyIn.getElement("vertex").addProperty<float>("efflorescence", effl);
-    plyIn.getElement("vertex").addProperty<float>("corrosion", corr);
-    plyIn.getElement("vertex").addProperty<float>("spalling", spall);
-    plyIn.getElement("vertex").addProperty<float>("crack", crack);
-    //plyIn.getElement("vertex").addProperty<float>("max_sharpness", sharp);
-    //plyIn.getElement("vertex").addProperty<float>("min_distances", dist);
+    ply.getElement("vertex").addProperty<int>("defect", defect);
+    ply.getElement("vertex").addProperty<float>("confidence", conf);
+    ply.getElement("vertex").addProperty<float>("background", back);
+    ply.getElement("vertex").addProperty<float>("control_point", cp);
+    ply.getElement("vertex").addProperty<float>("vegetation", vege);
+    ply.getElement("vertex").addProperty<float>("efflorescence", effl);
+    ply.getElement("vertex").addProperty<float>("corrosion", corr);
+    ply.getElement("vertex").addProperty<float>("spalling", spall);
+    ply.getElement("vertex").addProperty<float>("crack", crack);
+    //ply.getElement("vertex").addProperty<float>("max_sharpness", sharp);
+    //ply.getElement("vertex").addProperty<float>("min_distances", dist);
     // coverage
 
-    plyIn.write(args[2], happly::DataFormat::Binary);
+    ply.write(args[2], happly::DataFormat::Binary);
 
     std::cout << std::endl;
 }
@@ -436,20 +457,11 @@ int main (int argc, char *argv[]){
     return (0);
 }
 
-/*
-PYBIND11_MODULE(colorize_point_cloud, m) {
-    pybind11::class_<AgisoftXMLReader>(m, "AgisoftXMLReader")
-        .def(py::init<const std::string &, std::vector<std::string> &>());
 
-    m.doc() = R"pbdoc(
-        Pybind11 example plugin
-        -----------------------
-        .. currentmodule:: colorize_point_cloud
-        .. autosummary::
-           :toctree: _generate
-           add
-           subtract
-    )pbdoc";
+PYBIND11_MODULE(colorize_point_cloud, m) {
+    pybind11::class_<CloudColorizer>(m, "CloudColorizer")
+        .def(pybind11::init<const std::string &>())
+        .def("cache_images", &CloudColorizer::cache_images);
 
     m.def("colorize_point_cloud", &colorize_point_cloud, R"pbdoc(
         Add main
@@ -462,4 +474,4 @@ PYBIND11_MODULE(colorize_point_cloud, m) {
 #else
     m.attr("__version__") = "dev";
 #endif
-}*/
+}
