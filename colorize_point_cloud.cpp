@@ -20,8 +20,10 @@
 #define STRINGIFY(x) #x
 #define MACRO_STRINGIFY(x) STRINGIFY(x)
 
-class CloudColorizer {
+class Scene {
     std::string xml_path;
+
+    float scale = 1.0;
 
     double chunk_scale;
     Eigen::Matrix4d chunk_transform;
@@ -30,25 +32,28 @@ class CloudColorizer {
     Eigen::MatrixXd intrinsics_mat;
     Eigen::MatrixXd origins_mat;
     Eigen::MatrixXd transforms_mat;
+    Eigen::MatrixXd directions_mat;
 
   public:
-    Eigen::MatrixXd directions_mat;
     std::vector<std::vector<cv::Mat>> images;
     std::vector<Eigen::MatrixXf> depths;
     std::vector<cv::Mat> sharpness;
 
-    CloudColorizer(std::string);
+    Scene(std::string);
     void parse_agisoft_xml(std::string);
-    void cache_images(std::vector<std::string>, float scale);
-    std::tuple<Eigen::VectorXd, Eigen::VectorXd, Eigen::VectorXd, Eigen::VectorXd>
-        compute_uv(Eigen::Vector4d, Eigen::Vector3d, float);
+    void cache_images(std::vector<std::string>, std::string, std::string, float scale);
+    std::tuple<std::vector<double>, std::vector<double>, std::vector<double>, std::vector<double>>
+        compute_uvs(std::vector<double>, std::vector<double>);
+    std::vector<double> compute_angles(std::vector<double>);
+    std::vector<double> compute_weight(std::vector<double>, std::vector<double>, std::vector<double>,
+        std::vector<double>, std::vector<double>);
 };
 
-CloudColorizer::CloudColorizer(std::string xml_path){
-    this->parse_agisoft_xml(xml_path);
+Scene::Scene(std::string xml_path){
+    parse_agisoft_xml(xml_path);
 }
 
-void CloudColorizer::parse_agisoft_xml(std::string xml_path){
+void Scene::parse_agisoft_xml(std::string xml_path){
     // parse agisoft xml
     pugi::xml_document doc;
     pugi::xml_parse_result result = doc.load_file(xml_path.c_str());
@@ -155,10 +160,14 @@ void CloudColorizer::parse_agisoft_xml(std::string xml_path){
         intrinsics_mat.row(i) = intrinsics[sensor_id[i]];
 }
 
-void CloudColorizer::cache_images(std::vector<std::string> imgs_paths, float scale){
+void Scene::cache_images(std::vector<std::string> imgs_paths, std::string sharpness_path,
+        std::string depths_path, float cache_scale){
+
+    scale = cache_scale;
+
     std::cout << "Caching images..." << std::flush;
 
-    for(std::string label : this->labels){
+    for(std::string label : labels){
         // cache images
         std::vector<cv::Mat> curr_images;
         for (int i = 0; i < imgs_paths.size(); i++){
@@ -178,7 +187,7 @@ void CloudColorizer::cache_images(std::vector<std::string> imgs_paths, float sca
                 for (int j = 0; j < nrows; j++)
                     for (int k = 0; k < ncols; k++)
                         dep(j,k) = loaded_data[j*ncols+k];
-                depths.push_back(dep);
+                //depths.push_back(dep);
                 continue;
             }
             else
@@ -191,19 +200,41 @@ void CloudColorizer::cache_images(std::vector<std::string> imgs_paths, float sca
             if (imgs_paths[i].find("_sharp") != std::string::npos)
                 sharpness.push_back(img);
             curr_images.push_back(img);
-
         }
         images.push_back(curr_images);
+
+        // cache sharpness
+        std::string img_path = sharpness_path + "/" + label + ".JPG";
+        if (!std::filesystem::exists(img_path))
+            img_path = sharpness_path + "/" + label + ".jpg";
+        cv::Mat img = cv::imread(img_path, cv::IMREAD_GRAYSCALE);
+        cv::resize(img, img, cv::Size(int(scale * img.cols), int(scale * img.rows)), cv::INTER_LINEAR);
+        sharpness.push_back(img);
+
+        // cache depth
+        cnpy::NpyArray arr = cnpy::npy_load(depths_path + "/" + label + ".npy");
+        float* loaded_data = arr.data<float>();
+        size_t nrows = arr.shape[0];
+        size_t ncols = arr.shape[1];
+        Eigen::MatrixXf dep(nrows, ncols);
+        for (int j = 0; j < nrows; j++)
+            for (int k = 0; k < ncols; k++)
+                dep(j,k) = loaded_data[j*ncols+k];
+        depths.push_back(dep);
     }
     std::cout << " caching done." << std::endl;
 }
 
 
-std::tuple<Eigen::VectorXd, Eigen::VectorXd, Eigen::VectorXd, Eigen::VectorXd> CloudColorizer::
-    compute_uv(Eigen::Vector4d point, Eigen::Vector3d normal, float scale){
+std::tuple<std::vector<double>, std::vector<double>, std::vector<double>, std::vector<double>> Scene::
+    compute_uvs(std::vector<double> point_in, std::vector<double> normal_in){
+
+    // get coordinates and normals
+    Eigen::Vector4d point(point_in[0], point_in[1], point_in[2], 1);
+    Eigen::Vector3d normal(normal_in[0], normal_in[1], normal_in[2]);
 
     // apply transformation
-    Eigen::VectorXd point_trans = (this->transforms_mat * point);
+    Eigen::VectorXd point_trans = (transforms_mat * point);
     Eigen::MatrixXd point_trans_tmp = Eigen::Map<Eigen::MatrixXd>(point_trans.data(), 4, point_trans.size() / 4);
     Eigen::MatrixXd point_trans_dist = point_trans_tmp.block(0,0,3,point_trans.size() / 4);
     point_trans_tmp = point_trans_tmp.array().rowwise() /  point_trans_tmp.row(2).array();
@@ -221,43 +252,112 @@ std::tuple<Eigen::VectorXd, Eigen::VectorXd, Eigen::VectorXd, Eigen::VectorXd> C
     Eigen::VectorXd row0 = point_trans_mat.row(0);
     Eigen::VectorXd row1 = point_trans_mat.row(1);
 
-    Eigen::VectorXd px = 1 + this->intrinsics_mat.array().col(0) * rr2.array() +
-                             this->intrinsics_mat.array().col(1) * rr4.array() +
-                             this->intrinsics_mat.array().col(2) * rr6.array() +
-                             this->intrinsics_mat.array().col(3) * rr8.array();
+    Eigen::VectorXd px = 1 + intrinsics_mat.array().col(0) * rr2.array() +
+                             intrinsics_mat.array().col(1) * rr4.array() +
+                             intrinsics_mat.array().col(2) * rr6.array() +
+                             intrinsics_mat.array().col(3) * rr8.array();
     px = row0.array() * px.array();
-    px = px.array() + this->intrinsics_mat.array().col(4) * (rr2.array() + 2 * row0.cwiseProduct(row0).array()) +
-                               2 * this->intrinsics_mat.array().col(5) * row0.cwiseProduct(row1).array();
+    px = px.array() + intrinsics_mat.array().col(4) * (rr2.array() + 2 * row0.cwiseProduct(row0).array()) +
+                               2 * intrinsics_mat.array().col(5) * row0.cwiseProduct(row1).array();
 
-    Eigen::VectorXd py = 1 + this->intrinsics_mat.array().col(0) * rr2.array() +
-                             this->intrinsics_mat.array().col(1) * rr4.array() +
-                             this->intrinsics_mat.array().col(2) * rr6.array() +
-                             this->intrinsics_mat.array().col(3) * rr8.array();
+    Eigen::VectorXd py = 1 + intrinsics_mat.array().col(0) * rr2.array() +
+                             intrinsics_mat.array().col(1) * rr4.array() +
+                             intrinsics_mat.array().col(2) * rr6.array() +
+                             intrinsics_mat.array().col(3) * rr8.array();
     py = row1.array() * py.array();
-    py = py.array() + this->intrinsics_mat.array().col(4) * (rr2.array() + 2 * row1.cwiseProduct(row1).array()) +
-                               2 * this->intrinsics_mat.array().col(5) * row0.cwiseProduct(row1).array();
-
-    // compute distance to pixel
-    Eigen::MatrixXd img_plane_uv = Eigen::MatrixXd::Zero(3, px.size());
-    img_plane_uv.row(0) = px;
-    img_plane_uv.row(1) = py;
-    Eigen::VectorXd distances = (img_plane_uv - point_trans_dist).colwise().norm() * this->chunk_scale;
+    py = py.array() + intrinsics_mat.array().col(4) * (rr2.array() + 2 * row1.cwiseProduct(row1).array()) +
+                               2 * intrinsics_mat.array().col(5) * row0.cwiseProduct(row1).array();
 
     // get uv coordinates
-    Eigen::VectorXd pu = this->intrinsics_mat.array().col(7) * 0.5 +
-                         this->intrinsics_mat.array().col(9) + px.array() * this->intrinsics_mat.array().col(6);
-    Eigen::VectorXd pv = this->intrinsics_mat.array().col(8) * 0.5 +
-                         this->intrinsics_mat.array().col(10) + py.array() * this->intrinsics_mat.array().col(6);
+    Eigen::VectorXd pu = intrinsics_mat.array().col(7) * 0.5 +
+                         intrinsics_mat.array().col(9) + px.array() * intrinsics_mat.array().col(6);
+    Eigen::VectorXd pv = intrinsics_mat.array().col(8) * 0.5 +
+                         intrinsics_mat.array().col(10) + py.array() * intrinsics_mat.array().col(6);
 
     // scale
     pu = pu * scale;
     pv = pv * scale;
 
-    // determine uv mask
-    Eigen::VectorXd mask = (0 < pu.array() && pu.array() <  scale * this->intrinsics_mat(0,7) &&
-                               0 < pv.array() && pv.array() < scale * this->intrinsics_mat(0,8)).cast<double>();
+    // compute distance to pixel
+    Eigen::MatrixXd img_plane_uv = Eigen::MatrixXd::Zero(3, px.size());
+    img_plane_uv.row(0) = px;
+    img_plane_uv.row(1) = py;
+    Eigen::VectorXd distances = (img_plane_uv - point_trans_dist).colwise().norm() * chunk_scale;
 
-    return {pu, pv, distances, mask};
+    // determine uv mask
+    Eigen::VectorXd mask = (0 < pu.array() && pu.array() <  scale * intrinsics_mat(0,7) &&
+                               0 < pv.array() && pv.array() < scale * intrinsics_mat(0,8)).cast<double>();
+
+    std::vector<double> pu_out(pu.data(), pu.data() + pu.rows() * pu.cols());
+    std::vector<double> pv_out(pv.data(), pv.data() + pv.rows() * pv.cols());
+    std::vector<double> distances_out(distances.data(), distances.data() + distances.rows() * distances.cols());
+    std::vector<double> mask_out(mask.data(), mask.data() + mask.rows() * mask.cols());
+
+    return {pu_out, pv_out, distances_out, mask_out};
+}
+
+
+std::vector<double> Scene::compute_angles(std::vector<double> normal_in){
+    Eigen::Vector3d normal(normal_in[0], normal_in[1], normal_in[2]);
+
+    // compute angle
+    Eigen::VectorXd nominator = directions_mat.transpose() * normal;
+    Eigen::VectorXd denominator = normal.norm() * directions_mat.colwise().norm();
+    Eigen::VectorXd angles = nominator.array() / denominator.array();
+    angles = angles.array().acos();
+    angles = angles * (180.0/M_PI);
+
+    std::vector<double> angles_out(angles.data(), angles.data() + angles.rows() * angles.cols());
+
+    return angles_out;
+}
+
+
+std::vector<double> Scene::compute_weight(std::vector<double> pu_in, std::vector<double> pv_in,
+        std::vector<double> distances_in, std::vector<double> uv_mask_in, std::vector<double> angles_in){
+
+    Eigen::VectorXd pu = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(pu_in.data(), pu_in.size());
+    Eigen::VectorXd pv = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(pv_in.data(), pv_in.size());
+    Eigen::VectorXd dist = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(distances_in.data(), distances_in.size());
+    Eigen::VectorXd angle = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(angles_in.data(), angles_in.size());
+    Eigen::VectorXd uv_mask = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(uv_mask_in.data(), uv_mask_in.size());
+
+    // get depth and sharpness
+    Eigen::VectorXd visible = Eigen::VectorXd::Zero(pu.size());
+    Eigen::VectorXd sharp = Eigen::VectorXd::Zero(pu.size());
+    for (int j = 0; j < pu.size(); j++ ){
+        if (uv_mask[j] == 0)
+            continue;
+        visible(j) = double(depths[j](int(pv[j]*0.25/scale),int(pu[j]*0.25/scale))); // 0.25 is the target scale of the depthmaps (due to storage shortness)
+        sharp(j) = double(int(sharpness[j].at<uchar>(pv[j],pu[j])));
+    }
+
+    // visibility mask
+    double delta = 0.01;
+    visible = visible.array() - dist.array();
+    visible = (visible.array().abs() < delta).cast<double>();
+
+    // angle weight
+    angle = (angle.array() + 180) * M_PI / 180.0;
+    angle = angle.array().cos();
+    angle = angle.array().max(angle.array() * 0);
+
+    // distance weight
+    Eigen::VectorXd dist_sorted = dist;
+    std::sort(dist_sorted.data(), dist_sorted.data() + dist_sorted.size());
+    dist = dist.array() - dist_sorted[0];
+    dist = 1 - dist.array() / ((dist[3] - dist_sorted[0]) * 100);
+    dist = dist.array().max(dist.array() * 0);
+
+    // sharpness weight
+    sharp = sharp.array() / std::max(sharp.array().maxCoeff(), std::numeric_limits<double>::min());
+
+    // total weight
+    Eigen::VectorXd weight = uv_mask.array() * visible.array() * angle.array() * dist.array() * sharp.array();
+
+    std::vector<double> weight_out(weight.data(), weight.data() + weight.rows() * weight.cols());
+
+    return weight_out;
 }
 
 
@@ -268,12 +368,12 @@ void colorize_point_cloud(const std::vector<std::string> &args){
 
     // image folder paths
     std::vector<std::string> imgs_paths;
-    for (int i = 3; i < args.size(); i++)
+    for (int i = 3; i < args.size()-2; i++)
         imgs_paths.push_back(args[i]);
 
     float scale = 0.5;
-    CloudColorizer cloud_colorizer = CloudColorizer(xml_path);
-    cloud_colorizer.cache_images(imgs_paths, scale);
+    Scene scene = Scene(xml_path);
+    scene.cache_images(imgs_paths, args[args.size()-2], args[args.size()-1], scale);
 
     // load ply point cloud
     happly::PLYData ply(cloud_path);
@@ -310,122 +410,59 @@ void colorize_point_cloud(const std::vector<std::string> &args){
                 << "sec " << std::flush;
         }
 
-        // get coordinates and normals
-        Eigen::Vector4d point(xyz[i][0], xyz[i][1], xyz[i][2], 1);
-        Eigen::Vector3d normal(nx[i], ny[i], nz[i]);
-
         // compute image coordinates
-        auto [pu, pv, distances, uv_mask] = cloud_colorizer.compute_uv(point, normal, scale);
+        std::vector<double> point_in{xyz[i][0], xyz[i][1], xyz[i][2]};
+        std::vector<double> normal_in{nx[i], ny[i], nz[i]};
+        auto [pu_out, pv_out, distances_out, uv_mask_out] = scene.compute_uvs(point_in, normal_in);
 
-        Eigen::VectorXd ones = distances;
-        ones.setOnes();
+        // convert vectors to eigen
+        Eigen::VectorXd pu = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(pu_out.data(), pu_out.size());
+        Eigen::VectorXd pv = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(pv_out.data(), pv_out.size());
 
-        // compute angle
-        Eigen::VectorXd nominator = cloud_colorizer.directions_mat.transpose() * normal;
-        Eigen::VectorXd denominator = normal.norm() * cloud_colorizer.directions_mat.colwise().norm();
-        Eigen::VectorXd angles = nominator.array() / denominator.array();
-        angles = angles.array().acos();
-        angles = angles * (180.0/M_PI);
+        // compute angles and weights
+        std::vector<double> angles_out = scene.compute_angles(normal_in);
+        std::vector<double> weight_out = scene.compute_weight(pu_out, pv_out, distances_out, uv_mask_out, angles_out);
+        Eigen::VectorXd weightt = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(weight_out.data(), weight_out.size());
 
-        // angle weight
-        Eigen::VectorXd mask_angles = (100 < angles.array() && angles.array() < 260).cast<double>();
-        Eigen::VectorXd weight_angles = angles.array() - 180;
-        weight_angles = weight_angles * M_PI / 2 / 180.0;
-        weight_angles = weight_angles.array().cos();
-        //weight_angles = 1 - weight_angles.array().abs();
-        //weight_angles = ones;
-
-        /*weight_angles = -Eigen::abs(weight_angles.array());
-        weight_angles = Eigen::pow(1.5, weight_angles.array());
-        weight_angles = weight_angles.array() * mask_angles.array();
-        weight_angles = weight_angles.array() / weight_angles.array().maxCoeff();*/
-
-        // distance weight
-        Eigen::VectorXd weight_dist = distances;
-        weight_dist = weight_dist.array() * mask_angles.array();
-        weight_dist = weight_dist.array() * uv_mask.array();
-        weight_dist = ones * weight_dist.array().maxCoeff() - weight_dist;
-        weight_dist = weight_dist.cwiseProduct(weight_dist);
-        weight_dist = weight_dist.array() * mask_angles.array();
-        weight_dist = weight_dist.array() * uv_mask.array();
-        weight_dist = weight_dist / std::max(weight_dist.array().maxCoeff(), std::numeric_limits<double>::min());
-
-        // container for accumulated weighted probabilities
-        Eigen::VectorXd accumulator = Eigen::VectorXd::Zero(imgs_paths.size()-2);
-        Eigen::MatrixXd values = Eigen::MatrixXd::Zero(pu.size(), imgs_paths.size()-2);
-        Eigen::VectorXd dep = Eigen::VectorXd::Zero(pu.size());
-        Eigen::VectorXd shar = Eigen::VectorXd::Zero(pu.size());
-
-        // apply masks
-        pu = uv_mask.array() * pu.array();
-        pu = mask_angles.array() * pu.array();
-        pv = uv_mask.array() * pv.array();
-        pv = mask_angles.array() * pv.array();
-
-        // get values from images
+        // get defect-wise probabilities from images
+        Eigen::MatrixXd values = Eigen::MatrixXd::Zero(pu.size(), imgs_paths.size());
         for (int j = 0; j < pu.size(); j++ ){
-            if (weight_dist[j] == 0)
+            if (weightt[j] == 0 || uv_mask_out[j] == 0)
                 continue;
-            Eigen::VectorXd curr_val(imgs_paths.size()-2);
-            for (int k = 0; k < imgs_paths.size()-2; k++)
-                curr_val(k) = double(int(cloud_colorizer.images[j][k].at<uchar>(pv[j],pu[j])));///255;
+            Eigen::VectorXd curr_val(imgs_paths.size());
+            for (int k = 0; k < imgs_paths.size(); k++)
+                curr_val(k) = double(int(scene.images[j][k].at<uchar>(pv[j],pu[j])));
             values.row(j) = curr_val;
         }
 
-        // get depth and sharpness
-        for (int j = 0; j < pu.size(); j++ ){
-            if (weight_dist[j] == 0)
-                continue;
-            dep(j) = double(cloud_colorizer.depths[j](int(pv[j]/2),int(pu[j]/2))); // / 2 comes from 2 / 4, 2 for image downsizing and 4 from depthmap downsizing
-            shar(j) = double(int(cloud_colorizer.sharpness[j].at<uchar>(pv[j],pu[j])));
-        }
-
-        // sharpness weight
-        Eigen::VectorXd sharpness = shar;//values.block(0, 7, pu.size(), 1);
-        double maxSharpness = sharpness.array().maxCoeff();
-        sharpness = sharpness.array() / sharpness.array().maxCoeff();
-
-        // visibility check
-        Eigen::VectorXd visible = ((dep.array() - distances.array()).abs() < 0.05).cast<double>();
-
         // apply weights
-        values = values.array().colwise() * visible.array();
-        values = values.array().colwise() * weight_angles.array();
-        //values = values.array().colwise() * sharpness.array();
-        values = values.array().colwise() * weight_dist.array();
+        values = values.array().colwise() * weightt.array();
 
-        // sum over images
-        accumulator = values.colwise().sum();
-
-        // shrinked accumulator
-        Eigen::VectorXd accumulator_shrinked(imgs_paths.size()-2); // subtract sharpness and depth
-        accumulator_shrinked << accumulator[6], accumulator[5], accumulator[4],
-            accumulator[3], accumulator[2], accumulator[1], accumulator[0]; // .reverse()-function was unwilling
+        // accumulate probabilities defect-wise
+        Eigen::VectorXd accumulator = values.colwise().sum();
+        accumulator.reverseInPlace();
 
         // get argmax
         Eigen::VectorXd::Index maxIndex;
-        double maxNorm = accumulator_shrinked.array().maxCoeff(&maxIndex);
+        double maxNorm = accumulator.array().maxCoeff(&maxIndex);
 
         // normalize
-        accumulator_shrinked = accumulator_shrinked.array() / std::max(accumulator_shrinked.array().sum(), std::numeric_limits<double>::min());
+        accumulator = accumulator.array() / std::max(accumulator.array().sum(), std::numeric_limits<double>::min());
 
         // defects
         defect[i] = maxIndex;
-        crack[i] = accumulator_shrinked[6];
-        spall[i] = accumulator_shrinked[5];
-        corr[i] = accumulator_shrinked[4];
-        effl[i] = accumulator_shrinked[3];
-        vege[i] = accumulator_shrinked[2];
-        cp[i] = accumulator_shrinked[1];
-        back[i] = accumulator_shrinked[0];
-
-        sharp[i] = maxSharpness;
-        dist[i] = distances.array().mean();
+        crack[i] = accumulator[6];
+        spall[i] = accumulator[5];
+        corr[i] = accumulator[4];
+        effl[i] = accumulator[3];
+        vege[i] = accumulator[2];
+        cp[i] = accumulator[1];
+        back[i] = accumulator[0];
 
         // confidence
-        maxNorm = accumulator_shrinked[maxIndex];
-        accumulator_shrinked[maxIndex] = 0;
-        conf[i] = maxNorm - accumulator_shrinked.array().maxCoeff();
+        maxNorm = accumulator[maxIndex];
+        accumulator[maxIndex] = 0;
+        conf[i] = maxNorm - accumulator.array().maxCoeff();
     }
 
     // export ply
@@ -438,9 +475,6 @@ void colorize_point_cloud(const std::vector<std::string> &args){
     ply.getElement("vertex").addProperty<float>("corrosion", corr);
     ply.getElement("vertex").addProperty<float>("spalling", spall);
     ply.getElement("vertex").addProperty<float>("crack", crack);
-    //ply.getElement("vertex").addProperty<float>("max_sharpness", sharp);
-    //ply.getElement("vertex").addProperty<float>("min_distances", dist);
-    // coverage
 
     ply.write(args[2], happly::DataFormat::Binary);
 
@@ -458,10 +492,13 @@ int main (int argc, char *argv[]){
 }
 
 
-PYBIND11_MODULE(colorize_point_cloud, m) {
-    pybind11::class_<CloudColorizer>(m, "CloudColorizer")
+PYBIND11_MODULE(scene, m) {
+    pybind11::class_<Scene>(m, "Scene")
         .def(pybind11::init<const std::string &>())
-        .def("cache_images", &CloudColorizer::cache_images);
+        .def("cache_images", &Scene::cache_images)
+        .def("compute_uvs", &Scene::compute_uvs)
+        .def("compute_angles", &Scene::compute_angles)
+        .def("compute_weight", &Scene::compute_weight);
 
     m.def("colorize_point_cloud", &colorize_point_cloud, R"pbdoc(
         Add main
