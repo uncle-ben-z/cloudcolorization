@@ -1,11 +1,12 @@
 cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
-set (CMAKE_CXX_STANDARD 11)
+set (CMAKE_CXX_STANDARD 17)
 
-project(colorize_point_cloud)
+project(scene)
 
 find_package(PCL 1.2 REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(pybind11 REQUIRED)
 
 include_directories(${PCL_INCLUDE_DIRS})
 link_directories(${PCL_LIBRARY_DIRS})
@@ -20,8 +21,10 @@ include_directories(cnpy)
 link_directories(${CMAKE_SOURCE_DIR}/pugixml/build)
 link_directories(${CMAKE_SOURCE_DIR}/cnpy/build)
 
-add_executable (colorize_point_cloud colorize_point_cloud.cpp)
-target_link_libraries (colorize_point_cloud PUBLIC 
+pybind11_add_module(scene scene.cpp)
+
+#add_executable (scene scene.cpp)
+target_link_libraries (scene PUBLIC
   OpenMP::OpenMP_CXX 
   ${PCL_LIBRARIES} 
   ${OpenCV_LIBS} 
