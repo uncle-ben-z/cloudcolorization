@@ -17,13 +17,12 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#define STRINGIFY(x) #x
-#define MACRO_STRINGIFY(x) STRINGIFY(x)
 
 class Scene {
     std::string xml_path;
 
     float scale = 1.0;
+    int number_classes;
 
     double chunk_scale;
     Eigen::Matrix4d chunk_transform;
@@ -47,6 +46,7 @@ class Scene {
     std::vector<double> compute_angles(std::vector<double>);
     std::vector<double> compute_weight(std::vector<double>, std::vector<double>, std::vector<double>,
         std::vector<double>, std::vector<double>);
+    void colorize_point_cloud(std::string, std::string);
 };
 
 Scene::Scene(std::string xml_path){
@@ -136,9 +136,6 @@ void Scene::parse_agisoft_xml(std::string xml_path){
             z(2) = -1;
             ret = orig - origin * z;
             directions.push_back(ret.block(0,0,3,1));
-
-            //if (transforms.size() == 100)
-            //    break;
         }
     }
 
@@ -160,45 +157,28 @@ void Scene::parse_agisoft_xml(std::string xml_path){
         intrinsics_mat.row(i) = intrinsics[sensor_id[i]];
 }
 
-void Scene::cache_images(std::vector<std::string> imgs_paths, std::string sharpness_path,
-        std::string depths_path, float cache_scale){
+void Scene::cache_images
+        (std::vector<std::string> imgs_paths, std::string sharpness_path, std::string depths_path, float img_scale){
 
-    scale = cache_scale;
+    scale = img_scale;
+    number_classes = imgs_paths.size();
 
     std::cout << "Caching images..." << std::flush;
 
     for(std::string label : labels){
         // cache images
         std::vector<cv::Mat> curr_images;
-        for (int i = 0; i < imgs_paths.size(); i++){
+        for (int i = 0; i < number_classes; i++){
             std::string img_path;
 
-            if (imgs_paths[i].find("_mask") != std::string::npos)
-                img_path = imgs_paths[i] + "/" + label + ".png";
-
-            // special case: depth map as npy
-            else if (imgs_paths[i].find("_depth") != std::string::npos){
-                img_path = imgs_paths[i] + "/" + label + ".npy";
-                cnpy::NpyArray arr = cnpy::npy_load(img_path);
-                float* loaded_data = arr.data<float>();
-                size_t nrows = arr.shape[0];
-                size_t ncols = arr.shape[1];
-                Eigen::MatrixXf dep(nrows, ncols);
-                for (int j = 0; j < nrows; j++)
-                    for (int k = 0; k < ncols; k++)
-                        dep(j,k) = loaded_data[j*ncols+k];
-                //depths.push_back(dep);
-                continue;
-            }
-            else
-                img_path = imgs_paths[i] + "/" + label + ".JPG";
+            img_path = imgs_paths[i] + "/" + label + ".JPG";
+            if (!std::filesystem::exists(img_path))
+                img_path = imgs_paths[i] + "/" + label + ".jpg";
                 if (!std::filesystem::exists(img_path))
-                    img_path = imgs_paths[i] + "/" + label + ".jpg";
+                    img_path = imgs_paths[i] + "/" + label + ".png";
 
             cv::Mat img = cv::imread(img_path, cv::IMREAD_GRAYSCALE);
             cv::resize(img, img, cv::Size(int(scale * img.cols), int(scale * img.rows)), cv::INTER_LINEAR);
-            if (imgs_paths[i].find("_sharp") != std::string::npos)
-                sharpness.push_back(img);
             curr_images.push_back(img);
         }
         images.push_back(curr_images);
@@ -226,8 +206,8 @@ void Scene::cache_images(std::vector<std::string> imgs_paths, std::string sharpn
 }
 
 
-std::tuple<std::vector<double>, std::vector<double>, std::vector<double>, std::vector<double>> Scene::
-    compute_uvs(std::vector<double> point_in, std::vector<double> normal_in){
+std::tuple<std::vector<double>, std::vector<double>, std::vector<double>, std::vector<double>> Scene::compute_uvs
+        (std::vector<double> point_in, std::vector<double> normal_in){
 
     // get coordinates and normals
     Eigen::Vector4d point(point_in[0], point_in[1], point_in[2], 1);
@@ -333,7 +313,7 @@ std::vector<double> Scene::compute_weight(std::vector<double> pu_in, std::vector
     }
 
     // visibility mask
-    double delta = 0.01;
+    double delta = 0.05;
     visible = visible.array() - dist.array();
     visible = (visible.array().abs() < delta).cast<double>();
 
@@ -361,22 +341,9 @@ std::vector<double> Scene::compute_weight(std::vector<double> pu_in, std::vector
 }
 
 
-void colorize_point_cloud(const std::vector<std::string> &args){
-    // paramters
-    std::string xml_path = args[0];
-    std::string cloud_path = args[1];
-
-    // image folder paths
-    std::vector<std::string> imgs_paths;
-    for (int i = 3; i < args.size()-2; i++)
-        imgs_paths.push_back(args[i]);
-
-    float scale = 0.5;
-    Scene scene = Scene(xml_path);
-    scene.cache_images(imgs_paths, args[args.size()-2], args[args.size()-1], scale);
-
+void Scene::colorize_point_cloud(std::string in_cloud, std::string out_cloud){
     // load ply point cloud
-    happly::PLYData ply(cloud_path);
+    happly::PLYData ply(in_cloud);
     std::vector<std::array<double, 3>> xyz = ply.getVertexPositions();
 
     // get normals
@@ -413,33 +380,33 @@ void colorize_point_cloud(const std::vector<std::string> &args){
         // compute image coordinates
         std::vector<double> point_in{xyz[i][0], xyz[i][1], xyz[i][2]};
         std::vector<double> normal_in{nx[i], ny[i], nz[i]};
-        auto [pu_out, pv_out, distances_out, uv_mask_out] = scene.compute_uvs(point_in, normal_in);
+        auto [pu_out, pv_out, distances_out, uv_mask_out] = compute_uvs(point_in, normal_in);
 
         // convert vectors to eigen
         Eigen::VectorXd pu = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(pu_out.data(), pu_out.size());
         Eigen::VectorXd pv = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(pv_out.data(), pv_out.size());
 
         // compute angles and weights
-        std::vector<double> angles_out = scene.compute_angles(normal_in);
-        std::vector<double> weight_out = scene.compute_weight(pu_out, pv_out, distances_out, uv_mask_out, angles_out);
-        Eigen::VectorXd weightt = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(weight_out.data(), weight_out.size());
+        std::vector<double> angles_out = compute_angles(normal_in);
+        std::vector<double> weight_out = compute_weight(pu_out, pv_out, distances_out, uv_mask_out, angles_out);
+        Eigen::VectorXd weight = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(weight_out.data(), weight_out.size());
 
         // get defect-wise probabilities from images
-        Eigen::MatrixXd values = Eigen::MatrixXd::Zero(pu.size(), imgs_paths.size());
+        Eigen::MatrixXd probabilities = Eigen::MatrixXd::Zero(pu.size(), number_classes);
         for (int j = 0; j < pu.size(); j++ ){
-            if (weightt[j] == 0 || uv_mask_out[j] == 0)
+            if (weight[j] == 0)
                 continue;
-            Eigen::VectorXd curr_val(imgs_paths.size());
-            for (int k = 0; k < imgs_paths.size(); k++)
-                curr_val(k) = double(int(scene.images[j][k].at<uchar>(pv[j],pu[j])));
-            values.row(j) = curr_val;
+            Eigen::VectorXd curr_class(number_classes);
+            for (int k = 0; k < number_classes; k++)
+                curr_class(k) = double(int(images[j][k].at<uchar>(pv[j],pu[j])));
+            probabilities.row(j) = curr_class;
         }
 
         // apply weights
-        values = values.array().colwise() * weightt.array();
+        probabilities = probabilities.array().colwise() * weight.array();
 
         // accumulate probabilities defect-wise
-        Eigen::VectorXd accumulator = values.colwise().sum();
+        Eigen::VectorXd accumulator = probabilities.colwise().sum();
         accumulator.reverseInPlace();
 
         // get argmax
@@ -476,19 +443,9 @@ void colorize_point_cloud(const std::vector<std::string> &args){
     ply.getElement("vertex").addProperty<float>("spalling", spall);
     ply.getElement("vertex").addProperty<float>("crack", crack);
 
-    ply.write(args[2], happly::DataFormat::Binary);
+    ply.write(out_cloud, happly::DataFormat::Binary);
 
     std::cout << std::endl;
-}
-
-int main (int argc, char *argv[]){
-    // read commandline arguments
-    std::vector<std::string> args;
-    for (int i = 1; i < argc; i++)
-        args.push_back(argv[i]);
-
-    colorize_point_cloud(args);
-    return (0);
 }
 
 
@@ -498,17 +455,6 @@ PYBIND11_MODULE(scene, m) {
         .def("cache_images", &Scene::cache_images)
         .def("compute_uvs", &Scene::compute_uvs)
         .def("compute_angles", &Scene::compute_angles)
-        .def("compute_weight", &Scene::compute_weight);
-
-    m.def("colorize_point_cloud", &colorize_point_cloud, R"pbdoc(
-        Add main
-        Some other explanation about the add function.
-    )pbdoc");
-
-
-#ifdef VERSION_INFO
-    m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);
-#else
-    m.attr("__version__") = "dev";
-#endif
+        .def("compute_weight", &Scene::compute_weight)
+        .def("colorize_point_cloud", &Scene::colorize_point_cloud);
 }
