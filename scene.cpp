@@ -21,7 +21,6 @@
 class Scene {
     std::string xml_path;
 
-    float scale = 1.0;
     int number_classes;
 
     double chunk_scale;
@@ -38,6 +37,12 @@ class Scene {
     std::vector<Eigen::MatrixXf> depths;
     std::vector<cv::Mat> sharpness;
 
+    float pixel_size;
+    float focal_length;
+    int width;
+    int height;
+    float scale = 1.0;
+
     Scene(std::string);
     void parse_agisoft_xml(std::string);
     void cache_images(std::vector<std::string>, std::string, std::string, float scale);
@@ -47,6 +52,7 @@ class Scene {
     std::vector<double> compute_weight(std::vector<double>, std::vector<double>, std::vector<double>,
         std::vector<double>, std::vector<double>);
     void colorize_point_cloud(std::string, std::string);
+    std::vector<uchar> get_image(int);
 };
 
 Scene::Scene(std::string xml_path){
@@ -98,6 +104,17 @@ void Scene::parse_agisoft_xml(std::string xml_path){
             std::stod(sensor.child("calibration").child("cy").text().get());
         intrinsics.push_back(sensor_values);
     }
+
+    // explicity store some camera parameters
+    for (pugi::xml_node property:
+            doc.child("document").child("chunk").child("sensors").child("sensor").children("property")){
+        if (!std::string("pixel_width").compare(property.attribute("name").value()))
+            pixel_size = std::stof(property.attribute("value").value());
+        else if (!std::string("focal_length").compare(property.attribute("name").value()))
+            focal_length = std::stof(property.attribute("value").value());
+    }
+    width = intrinsics[0][7];
+    height = intrinsics[0][8];
 
     // containers
     std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>> transforms;
@@ -302,7 +319,7 @@ std::vector<double> Scene::compute_weight(std::vector<double> pu_in, std::vector
     Eigen::VectorXd angle = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(angles_in.data(), angles_in.size());
     Eigen::VectorXd uv_mask = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(uv_mask_in.data(), uv_mask_in.size());
 
-    // get depth and sharpness
+        // get depth and sharpness
     Eigen::VectorXd visible = Eigen::VectorXd::Zero(pu.size());
     Eigen::VectorXd sharp = Eigen::VectorXd::Zero(pu.size());
     for (int j = 0; j < pu.size(); j++ ){
@@ -313,7 +330,7 @@ std::vector<double> Scene::compute_weight(std::vector<double> pu_in, std::vector
     }
 
     // visibility mask
-    double delta = 0.05;
+    double delta = 0.05; // manually tuned 0.05 for mt bridge, 0.03 for others
     visible = visible.array() - dist.array();
     visible = (visible.array().abs() < delta).cast<double>();
 
@@ -429,7 +446,10 @@ void Scene::colorize_point_cloud(std::string in_cloud, std::string out_cloud){
         // confidence
         maxNorm = accumulator[maxIndex];
         accumulator[maxIndex] = 0;
-        conf[i] = maxNorm - accumulator.array().maxCoeff();
+        if (accumulator.array().maxCoeff() == 0)
+            conf[i] = 1;
+        else
+            conf[i] = maxNorm - accumulator.array().maxCoeff();
     }
 
     // export ply
@@ -448,6 +468,12 @@ void Scene::colorize_point_cloud(std::string in_cloud, std::string out_cloud){
     std::cout << std::endl;
 }
 
+std::vector<uchar> Scene::get_image(int i){
+    auto mat = images[i][0];
+    std::vector<uchar> array(mat.rows*mat.cols*mat.channels());
+    array.assign(mat.data, mat.data + mat.total()*mat.channels());
+    return array;
+}
 
 PYBIND11_MODULE(scene, m) {
     pybind11::class_<Scene>(m, "Scene")
@@ -456,5 +482,11 @@ PYBIND11_MODULE(scene, m) {
         .def("compute_uvs", &Scene::compute_uvs)
         .def("compute_angles", &Scene::compute_angles)
         .def("compute_weight", &Scene::compute_weight)
-        .def("colorize_point_cloud", &Scene::colorize_point_cloud);
+        .def("colorize_point_cloud", &Scene::colorize_point_cloud)
+        .def("get_image", &Scene::get_image)
+        .def_readonly("pixel_size", &Scene::pixel_size)
+        .def_readonly("focal_length", &Scene::focal_length)
+        .def_readonly("width", &Scene::width)
+        .def_readonly("height", &Scene::height)
+        .def_readonly("scale", &Scene::scale);
 }
