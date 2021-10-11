@@ -26,7 +26,6 @@ class Scene {
     double chunk_scale;
     Eigen::Matrix4d chunk_transform;
 
-    std::vector<std::string> labels;
     Eigen::MatrixXd intrinsics_mat;
     Eigen::MatrixXd origins_mat;
     Eigen::MatrixXd transforms_mat;
@@ -36,6 +35,7 @@ class Scene {
     std::vector<std::vector<cv::Mat>> images;
     std::vector<Eigen::MatrixXf> depths;
     std::vector<cv::Mat> sharpness;
+    std::vector<std::string> labels;
 
     float pixel_size;
     float focal_length;
@@ -53,6 +53,7 @@ class Scene {
         std::vector<double>, std::vector<double>);
     void colorize_point_cloud(std::string, std::string);
     std::vector<uchar> get_image(int);
+    std::string get_label(int);
 };
 
 Scene::Scene(std::string xml_path){
@@ -475,6 +476,10 @@ std::vector<uchar> Scene::get_image(int i){
     std::vector<uchar> array(mat.rows*mat.cols*mat.channels());
     array.assign(mat.data, mat.data + mat.total()*mat.channels());
     return array;
+}
+
+std::string Scene::get_label(int i){
+    return labels[i];
 }
 
 PYBIND11_MODULE(scene, m) {
