@@ -178,6 +178,8 @@ void Scene::cache_images
         (std::vector<std::string> imgs_paths, std::string sharpness_path, std::string depths_path, float img_scale){
 
     scale = img_scale;
+    width = int(width * scale);
+    height = int(height * scale);
     number_classes = imgs_paths.size();
 
     std::cout << "Caching images..." << std::flush;
@@ -319,7 +321,7 @@ std::vector<double> Scene::compute_weight(std::vector<double> pu_in, std::vector
     Eigen::VectorXd angle = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(angles_in.data(), angles_in.size());
     Eigen::VectorXd uv_mask = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(uv_mask_in.data(), uv_mask_in.size());
 
-        // get depth and sharpness
+    // get depth and sharpness
     Eigen::VectorXd visible = Eigen::VectorXd::Zero(pu.size());
     Eigen::VectorXd sharp = Eigen::VectorXd::Zero(pu.size());
     for (int j = 0; j < pu.size(); j++ ){
@@ -343,7 +345,7 @@ std::vector<double> Scene::compute_weight(std::vector<double> pu_in, std::vector
     Eigen::VectorXd dist_sorted = dist;
     std::sort(dist_sorted.data(), dist_sorted.data() + dist_sorted.size());
     dist = dist.array() - dist_sorted[0];
-    dist = 1 - dist.array() / ((dist[3] - dist_sorted[0]) * 100);
+    dist = 1 - dist.array() / ((dist_sorted[3] - dist_sorted[0]) * 100);
     dist = dist.array().max(dist.array() * 0);
 
     // sharpness weight
