@@ -22,15 +22,3 @@ cd build
 cmake ..
 make
 ```
-
-#### Run
-```
-./colorize_point_cloud \
-[path_to_agisoft_xml] \
-[path_to_ply_point_cloud] \
-[out_path_for_resulting_point_cloud] \
-[paths_to_image_folders_of_defect_class] \
-...
-[path_to_folder_with_sharpness_images] \
-[path_to_folder_with_depth_images]  
-```
