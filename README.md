@@ -6,12 +6,12 @@ This repo hosts C++ code for application-specific cloud colorization. It refers 
 
 #### Clone
 ```
-git clone git@github.com:uncle-ben-z/cloudcolorization-fast.git --recursive
+git clone git@github.com:uncle-ben-z/cloudcolorization.git --recursive
 ```
 
 #### Compile
 ``` linux 
-cd cloudcolorization-fast
+cd cloudcolorization
 
 # in case you forgot "--recursive" above
 git submodule init
