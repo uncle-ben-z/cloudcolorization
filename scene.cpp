@@ -91,18 +91,29 @@ void Scene::parse_agisoft_xml(std::string xml_path){
     std::vector<Eigen::VectorXd> intrinsics;
     for (pugi::xml_node sensor: doc.child("document").child("chunk").child("sensors").children("sensor")){
         Eigen::VectorXd sensor_values(11);
+
+        // get and store values
+        std::string k1 = sensor.child("calibration").child("k1").text().get();
+        std::string k2 = sensor.child("calibration").child("k2").text().get();
+        std::string k3 = sensor.child("calibration").child("k3").text().get();
+        std::string k4 = sensor.child("calibration").child("k4").text().get();
+        std::string p1 = sensor.child("calibration").child("p1").text().get();
+        std::string p2 = sensor.child("calibration").child("p2").text().get();
+        std::string cx = sensor.child("calibration").child("cx").text().get();
+        std::string cy = sensor.child("calibration").child("cy").text().get();
+
         sensor_values <<
-            std::stod(sensor.child("calibration").child("k1").text().get()),
-            std::stod(sensor.child("calibration").child("k2").text().get()),
-            std::stod(sensor.child("calibration").child("k3").text().get()),
-            0, // typically not available
-            0, // typically not available
-            0, // typically not available
+            std::stod(k1.empty() ? "0" : k1),
+            std::stod(k2.empty() ? "0" : k2),
+            std::stod(k3.empty() ? "0" : k3),
+            std::stod(k4.empty() ? "0" : k4),
+            std::stod(p1.empty() ? "0" : p1),
+            std::stod(p2.empty() ? "0" : p2),
             std::stod(sensor.child("calibration").child("f").text().get()),
             std::stod(sensor.child("calibration").child("resolution").attribute("width").value()),
             std::stod(sensor.child("calibration").child("resolution").attribute("height").value()),
-            std::stod(sensor.child("calibration").child("cx").text().get()),
-            std::stod(sensor.child("calibration").child("cy").text().get());
+            std::stod(cx.empty() ? "0" : cx),
+            std::stod(cy.empty() ? "0" : cy),
         intrinsics.push_back(sensor_values);
     }
 
