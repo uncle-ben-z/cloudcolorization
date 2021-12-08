@@ -354,18 +354,15 @@ std::vector<double> Scene::compute_weight(std::vector<double> pu_in, std::vector
     angle = angle.array().cos();
     angle = angle.array().max(angle.array() * 0);
 
-    // distance weight
-    Eigen::VectorXd dist_sorted = dist;
-    std::sort(dist_sorted.data(), dist_sorted.data() + dist_sorted.size());
-    dist = dist.array() - dist_sorted[0];
-    dist = 1 - dist.array() / ((dist_sorted[3] - dist_sorted[0]) * 100);
-    dist = dist.array().max(dist.array() * 0);
+    // resolution weight
+    Eigen::VectorXd resolution = dist.array() * pixel_size / focal_length;
+    resolution = resolution.minCoeff() / resolution.array();
 
     // sharpness weight
     sharp = sharp.array() / std::max(sharp.array().maxCoeff(), std::numeric_limits<double>::min());
 
     // total weight
-    Eigen::VectorXd weight = uv_mask.array() * visible.array() * angle.array() * dist.array() * sharp.array();
+    Eigen::VectorXd weight = uv_mask.array() * visible.array() * angle.array() * resolution.array() * sharp.array();
 
     std::vector<double> weight_out(weight.data(), weight.data() + weight.rows() * weight.cols());
 
@@ -573,6 +570,7 @@ std::string Scene::get_label(int i){
 PYBIND11_MODULE(scene, m) {
     pybind11::class_<Scene>(m, "Scene")
         .def(pybind11::init<const std::string &>())
+        .def("parse_agisoft_xml", &Scene::parse_agisoft_xml)
         .def("cache_images", &Scene::cache_images)
         .def("compute_uvs", &Scene::compute_uvs)
         .def("compute_angles", &Scene::compute_angles)
