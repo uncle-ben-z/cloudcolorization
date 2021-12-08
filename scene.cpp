@@ -20,6 +20,7 @@
 
 class Scene {
     std::string xml_path;
+    pugi::xml_document doc;
 
     int number_classes;
 
@@ -51,6 +52,7 @@ class Scene {
     std::vector<double> compute_angles(std::vector<double>);
     std::vector<double> compute_weight(std::vector<double>, std::vector<double>, std::vector<double>,
         std::vector<double>, std::vector<double>);
+    void filter_cameras(std::string, std::string);
     void colorize_point_cloud(std::string, std::string);
     std::vector<uchar> get_image(int);
     std::string get_label(int);
@@ -62,7 +64,6 @@ Scene::Scene(std::string xml_path){
 
 void Scene::parse_agisoft_xml(std::string xml_path){
     // parse agisoft xml
-    pugi::xml_document doc;
     pugi::xml_parse_result result = doc.load_file(xml_path.c_str());
     std::string delimiter = " ";
 
@@ -372,6 +373,82 @@ std::vector<double> Scene::compute_weight(std::vector<double> pu_in, std::vector
 }
 
 
+void Scene::filter_cameras(std::string in_cloud, std::string xml_out_path){
+    // load ply point cloud
+    happly::PLYData ply(in_cloud);
+    std::vector<std::array<double, 3>> xyz = ply.getVertexPositions();
+
+    // get normals
+    std::vector<double> nx, ny, nz;
+    try{
+        nx = ply.getElement("vertex").getProperty<double>("nx");
+        ny = ply.getElement("vertex").getProperty<double>("ny");
+        nz = ply.getElement("vertex").getProperty<double>("nz");
+    } catch (const std::exception& e) {
+        nx = ply.getElement("vertex").getProperty<double>("normal_x");
+        ny = ply.getElement("vertex").getProperty<double>("normal_y");
+        nz = ply.getElement("vertex").getProperty<double>("normal_z");
+    }
+
+    // start timer
+    std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+
+    Eigen::VectorXd mask_accu = Eigen::VectorXd::Zero(labels.size());
+
+    omp_set_num_threads(16);
+    #pragma omp parallel for
+    for(int i = 0; i < xyz.size(); i++){
+        // some console output
+        if (omp_get_thread_num() == 0 && i % int(xyz.size()/16/100) == 0 || i == (xyz.size()/16-1)){
+            std::cout << "\t\r" << int(100*i/(xyz.size()/16-1)) << "% of " << xyz.size() << " | Time: " <<
+                std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - begin).count()
+                << "sec " << std::flush;
+        }
+
+        // compute image coordinates
+        std::vector<double> point_in{xyz[i][0], xyz[i][1], xyz[i][2]};
+        std::vector<double> normal_in{nx[i], ny[i], nz[i]};
+        auto [pu_out, pv_out, distances_out, uv_mask_out] = compute_uvs(point_in, normal_in);
+        std::vector<double> angles_out = compute_angles(normal_in);
+
+        Eigen::VectorXd uv_mask = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(uv_mask_out.data(), uv_mask_out.size());
+        Eigen::VectorXd angle = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(angles_out.data(), angles_out.size());
+
+        // angle weight
+        angle = (angle.array() + 180) * M_PI / 180.0;
+        angle = angle.array().cos();
+        angle = angle.array().max(angle.array() * 0);
+        angle = (angle.array().abs() > 0).cast<double>();
+
+        uv_mask = uv_mask.array() * angle.array();
+
+        // accumulate results
+        #pragma omp critical
+        mask_accu = mask_accu + uv_mask;
+    }
+
+    int i = 0;
+    // disable unused cameras
+    for (pugi::xml_node camera: doc.child("document").child("chunk").child("cameras").children("camera")){
+        if (camera.child("transform") && !camera.attribute("enabled")){
+            // camera label and sensor (intrinsics)
+            printf("%d   %s  %d  \n", i, camera.attribute("label").value(), int(mask_accu[i]));
+            i++;
+
+            // continue if camera is used
+            if (int(mask_accu[i-1]) > 0)
+                continue;
+        }
+        else if (camera.attribute("enabled"))
+            camera.attribute("enabled") = "false";
+        else
+            camera.append_attribute("enabled") = "false";
+    }
+
+    doc.save_file(xml_out_path.c_str());
+}
+
+
 void Scene::colorize_point_cloud(std::string in_cloud, std::string out_cloud){
     // load ply point cloud
     happly::PLYData ply(in_cloud);
@@ -500,6 +577,7 @@ PYBIND11_MODULE(scene, m) {
         .def("compute_uvs", &Scene::compute_uvs)
         .def("compute_angles", &Scene::compute_angles)
         .def("compute_weight", &Scene::compute_weight)
+        .def("filter_cameras", &Scene::filter_cameras)
         .def("colorize_point_cloud", &Scene::colorize_point_cloud)
         .def("get_image", &Scene::get_image)
         .def_readonly("pixel_size", &Scene::pixel_size)
