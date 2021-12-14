@@ -435,6 +435,8 @@ void Scene::filter_cameras(std::string in_cloud, std::string xml_out_path){
             // continue if camera is used
             if (int(mask_accu[i-1]) > 0)
                 continue;
+            
+            camera.append_attribute("enabled") = "false";
         }
         else if (camera.attribute("enabled"))
             camera.attribute("enabled") = "false";
