@@ -3,17 +3,13 @@ set (CMAKE_CXX_STANDARD 17)
 
 project(scene)
 
-find_package(PCL 1.2 REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(pybind11 REQUIRED)
+find_package(Eigen3 REQUIRED)
 
-include_directories(${PCL_INCLUDE_DIRS})
-link_directories(${PCL_LIBRARY_DIRS})
-add_definitions(${PCL_DEFINITIONS})
-
-include_directories( ${OpenCV_INCLUDE_DIRS} )
-
+include_directories(${EIGEN3_INCLUDE_DIR})
+include_directories(${OpenCV_INCLUDE_DIRS})
 include_directories(happly)
 include_directories(pugixml/src)
 include_directories(cnpy)
@@ -26,8 +22,7 @@ pybind11_add_module(scene scene.cpp)
 #add_executable (scene scene.cpp)
 target_link_libraries (scene PUBLIC
   OpenMP::OpenMP_CXX 
-  ${PCL_LIBRARIES} 
-  ${OpenCV_LIBS} 
+  ${OpenCV_LIBS}
   pugixml
   cnpy
 )
