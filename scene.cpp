@@ -84,33 +84,40 @@ void Scene::parse_agisoft_xml(std::string xml_path){
     }
 
     // intrinsics
-    std::vector<Eigen::VectorXd> intrinsics;
+    std::map<int, Eigen::VectorXd> intrinsics;
     for (pugi::xml_node sensor: doc.child("document").child("chunk").child("sensors").children("sensor")){
         Eigen::VectorXd sensor_values(11);
 
-        // get and store values
-        std::string k1 = sensor.child("calibration").child("k1").text().get();
-        std::string k2 = sensor.child("calibration").child("k2").text().get();
-        std::string k3 = sensor.child("calibration").child("k3").text().get();
-        std::string k4 = sensor.child("calibration").child("k4").text().get();
-        std::string p1 = sensor.child("calibration").child("p1").text().get();
-        std::string p2 = sensor.child("calibration").child("p2").text().get();
-        std::string cx = sensor.child("calibration").child("cx").text().get();
-        std::string cy = sensor.child("calibration").child("cy").text().get();
+        if (sensor.child("calibration")) {
+            // get and store values
+            std::string k1 = sensor.child("calibration").child("k1").text().get();
+            std::string k2 = sensor.child("calibration").child("k2").text().get();
+            std::string k3 = sensor.child("calibration").child("k3").text().get();
+            std::string k4 = sensor.child("calibration").child("k4").text().get();
+            std::string p1 = sensor.child("calibration").child("p1").text().get();
+            std::string p2 = sensor.child("calibration").child("p2").text().get();
+            std::string cx = sensor.child("calibration").child("cx").text().get();
+            std::string cy = sensor.child("calibration").child("cy").text().get();
 
-        sensor_values <<
-            std::stod(k1.empty() ? "0" : k1),
-            std::stod(k2.empty() ? "0" : k2),
-            std::stod(k3.empty() ? "0" : k3),
-            std::stod(k4.empty() ? "0" : k4),
-            std::stod(p1.empty() ? "0" : p1),
-            std::stod(p2.empty() ? "0" : p2),
-            std::stod(sensor.child("calibration").child("f").text().get()),
-            std::stod(sensor.child("calibration").child("resolution").attribute("width").value()),
-            std::stod(sensor.child("calibration").child("resolution").attribute("height").value()),
-            std::stod(cx.empty() ? "0" : cx),
-            std::stod(cy.empty() ? "0" : cy),
-        intrinsics.push_back(sensor_values);
+            sensor_values <<
+                std::stod(k1.empty() ? "0" : k1),
+                std::stod(k2.empty() ? "0" : k2),
+                std::stod(k3.empty() ? "0" : k3),
+                std::stod(k4.empty() ? "0" : k4),
+                std::stod(p1.empty() ? "0" : p1),
+                std::stod(p2.empty() ? "0" : p2),
+                std::stod(sensor.child("calibration").child("f").text().get()),
+                std::stod(sensor.child("calibration").child("resolution").attribute("width").value()),
+                std::stod(sensor.child("calibration").child("resolution").attribute("height").value()),
+                std::stod(cx.empty() ? "0" : cx),
+                std::stod(cy.empty() ? "0" : cy);
+        }
+        else {
+            // invalid sensor configuration without calibration. use placeholder data and handle error later
+            sensor_values << 0., 0., 0., 0., 0., 0., -1., -1., -1., 0., 0.;
+        }
+        int id = std::stoi(sensor.attribute("id").value());
+        intrinsics[id] = sensor_values;
     }
 
     // explicity store some camera parameters
@@ -121,8 +128,6 @@ void Scene::parse_agisoft_xml(std::string xml_path){
         else if (!std::string("focal_length").compare(property.attribute("name").value()))
             focal_length = std::stof(property.attribute("value").value());
     }
-    width = intrinsics[0][7];
-    height = intrinsics[0][8];
 
     // containers
     std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>> transforms;
@@ -178,8 +183,18 @@ void Scene::parse_agisoft_xml(std::string xml_path){
         transforms_mat.block(i*4, 0, 4, 4) = transforms[i];
 
     intrinsics_mat = Eigen::MatrixXd::Zero(sensor_id.size(), 11);
-    for (int i = 0; i < sensor_id.size(); i++)
-        intrinsics_mat.row(i) = intrinsics[sensor_id[i]];
+    for (int i = 0; i < sensor_id.size(); i++) {
+        Eigen::VectorXd intrinsic = intrinsics[sensor_id[i]];
+        if (intrinsic[6] == -1.) {
+            // invalid sensor is used
+            std::stringstream error_msg;
+            error_msg << "Invalid sensor is used with id " << sensor_id[i] << std::endl;
+            throw std::runtime_error(error_msg.str());
+        }
+        width = intrinsic[7];
+        height = intrinsic[8];
+        intrinsics_mat.row(i) = intrinsic;
+    }
 }
 
 void Scene::cache_images
