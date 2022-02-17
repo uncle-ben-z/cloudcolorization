@@ -205,6 +205,11 @@ void Scene::cache_images
                     img_path = imgs_paths[i] + "/" + label + ".png";
 
             cv::Mat img = cv::imread(img_path, cv::IMREAD_GRAYSCALE);
+            if (img.empty()) {
+                std::stringstream error_msg;
+                error_msg << "File not found: " << img_path << std::endl;
+                throw std::runtime_error(error_msg.str());
+            }
             cv::resize(img, img, cv::Size(int(scale * img.cols), int(scale * img.rows)), cv::INTER_LINEAR);
             curr_images.push_back(img);
         }
