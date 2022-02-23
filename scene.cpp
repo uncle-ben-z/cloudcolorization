@@ -41,19 +41,28 @@ class Scene {
 
     Scene(std::string);
     void parse_agisoft_xml(std::string);
+    void write_agisoft_xml(std::string);
     void cache_images(std::vector<std::string>, std::string, std::string, float scale);
     std::tuple<std::vector<double>, std::vector<double>, std::vector<double>, std::vector<double>>
         compute_uvs(std::vector<double>, std::vector<double>);
     std::vector<double> compute_angles(std::vector<double>);
     std::vector<double> compute_weight(std::vector<double>, std::vector<double>, std::vector<double>,
         std::vector<double>, std::vector<double>);
-    void filter_cameras(std::string, std::string);
+    void filter_cameras(std::string);
     void colorize_point_cloud(std::string, std::string);
     std::vector<uchar> get_image(int);
     std::string get_label(int);
+    void reset(std::string);
 };
 
 Scene::Scene(std::string xml_path){
+    parse_agisoft_xml(xml_path);
+}
+
+void Scene::reset(std::string xml_path){
+    // TODO: clear intrinsics origins transforms directions
+    // TODO: clear images, depths, sharpness, labels.
+
     parse_agisoft_xml(xml_path);
 }
 
@@ -385,7 +394,7 @@ std::vector<double> Scene::compute_weight(std::vector<double> pu_in, std::vector
 }
 
 
-void Scene::filter_cameras(std::string in_cloud, std::string xml_out_path){
+void Scene::filter_cameras(std::string in_cloud){
     // load ply point cloud
     happly::PLYData ply(in_cloud);
     std::vector<std::array<double, 3>> xyz = ply.getVertexPositions();
@@ -458,10 +467,11 @@ void Scene::filter_cameras(std::string in_cloud, std::string xml_out_path){
         else
             camera.append_attribute("enabled") = "false";
     }
-
-    doc.save_file(xml_out_path.c_str());
 }
 
+void Scene::write_agisoft_xml(std::string xml_out_path){
+    doc.save_file(xml_out_path.c_str());
+}
 
 void Scene::colorize_point_cloud(std::string in_cloud, std::string out_cloud){
     // load ply point cloud
@@ -588,6 +598,7 @@ PYBIND11_MODULE(scene, m) {
     pybind11::class_<Scene>(m, "Scene")
         .def(pybind11::init<const std::string &>())
         .def("parse_agisoft_xml", &Scene::parse_agisoft_xml)
+        .def("write_agisoft_xml", &Scene::write_agisoft_xml)
         .def("cache_images", &Scene::cache_images)
         .def("compute_uvs", &Scene::compute_uvs)
         .def("compute_angles", &Scene::compute_angles)
