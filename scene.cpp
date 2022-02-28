@@ -283,7 +283,7 @@ std::tuple<std::vector<double>, std::vector<double>, std::vector<double>, std::v
 
     Eigen::VectorXd rr2 = rr.cwiseProduct(rr);
     Eigen::VectorXd rr4 = rr2.cwiseProduct(rr2);
-    Eigen::VectorXd rr6 = rr2.cwiseProduct(rr2).cwiseProduct(rr2);
+    Eigen::VectorXd rr6 = rr2.cwiseProduct(rr4);
     Eigen::VectorXd rr8 = rr4.cwiseProduct(rr4);
     Eigen::VectorXd row0 = point_trans_mat.row(0);
     Eigen::VectorXd row1 = point_trans_mat.row(1);
@@ -300,9 +300,10 @@ std::tuple<std::vector<double>, std::vector<double>, std::vector<double>, std::v
                              intrinsics_mat.array().col(1) * rr4.array() +
                              intrinsics_mat.array().col(2) * rr6.array() +
                              intrinsics_mat.array().col(3) * rr8.array();
+
     py = row1.array() * py.array();
-    py = py.array() + intrinsics_mat.array().col(4) * (rr2.array() + 2 * row1.cwiseProduct(row1).array()) +
-                               2 * intrinsics_mat.array().col(5) * row0.cwiseProduct(row1).array();
+    py = py.array() + intrinsics_mat.array().col(5) * (rr2.array() + 2 * row1.cwiseProduct(row1).array()) +
+                               2 * intrinsics_mat.array().col(4) * row0.cwiseProduct(row1).array();
 
     // get uv coordinates
     Eigen::VectorXd pu = intrinsics_mat.array().col(7) * 0.5 +
