@@ -60,8 +60,22 @@ Scene::Scene(std::string xml_path){
 }
 
 void Scene::reset(std::string xml_path){
-    // TODO: clear intrinsics origins transforms directions
-    // TODO: clear images, depths, sharpness, labels.
+    intrinsics_mat.resize(0,0);
+    origins_mat.resize(0,0);
+    transforms_mat.resize(0,0);
+    directions_mat.resize(0,0);
+
+    // TODO: this kind of memory freeing necessary?
+    for (int i = 0; i < images.size(); i++){
+        for(int j = 0; j < images[i].size(); j++)
+            images[i][j].release();
+        depths[i].resize(0,0);
+        sharpness[i].release();
+    }
+    images.clear();
+    depths.clear();
+    sharpness.clear();
+    labels.clear();
 
     parse_agisoft_xml(xml_path);
 }
@@ -308,6 +322,7 @@ std::tuple<std::vector<double>, std::vector<double>, std::vector<double>, std::v
     // get uv coordinates
     Eigen::VectorXd pu = intrinsics_mat.array().col(7) * 0.5 +
                          intrinsics_mat.array().col(9) + px.array() * intrinsics_mat.array().col(6);
+                         // TODO: include b1 and b2, affinity and non-orthogonality (skew) coefficients (in pixels),
     Eigen::VectorXd pv = intrinsics_mat.array().col(8) * 0.5 +
                          intrinsics_mat.array().col(10) + py.array() * intrinsics_mat.array().col(6);
 
@@ -607,6 +622,7 @@ PYBIND11_MODULE(scene, m) {
         .def("filter_cameras", &Scene::filter_cameras)
         .def("colorize_point_cloud", &Scene::colorize_point_cloud)
         .def("get_image", &Scene::get_image)
+        .def("reset", &Scene::reset)
         .def_readonly("pixel_size", &Scene::pixel_size)
         .def_readonly("focal_length", &Scene::focal_length)
         .def_readonly("width", &Scene::width)
