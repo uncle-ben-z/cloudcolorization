@@ -257,6 +257,8 @@ void Scene::cache_images
         std::string img_path = sharpness_path + "/" + label + ".JPG";
         if (!std::filesystem::exists(img_path))
             img_path = sharpness_path + "/" + label + ".jpg";
+        if (!std::filesystem::exists(img_path))
+            img_path = sharpness_path + "/" + label + ".png";
         cv::Mat img = cv::imread(img_path, cv::IMREAD_GRAYSCALE);
         cv::resize(img, img, cv::Size(int(scale * img.cols), int(scale * img.rows)), cv::INTER_LINEAR);
         sharpness.push_back(img);
