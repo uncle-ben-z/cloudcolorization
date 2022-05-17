@@ -343,6 +343,7 @@ std::tuple<std::vector<double>, std::vector<double>, std::vector<double>, std::v
     Eigen::VectorXd distances = (img_plane_uv - point_trans_dist).colwise().norm() * chunk_scale;
 
     // determine uv mask
+    // TODO: maybe use orientation from agisoft xml
     Eigen::VectorXd mask = (0 < pu.array() && pu.array() <  scale * intrinsics_mat(0,7) &&
                                0 < pv.array() && pv.array() < scale * intrinsics_mat(0,8)).cast<double>();
 
@@ -386,8 +387,20 @@ std::vector<double> Scene::compute_weight(std::vector<double> pu_in, std::vector
     for (int j = 0; j < pu.size(); j++ ){
         if (uv_mask[j] == 0)
             continue;
-        visible(j) = double(depths[j](int(pv[j]*0.25/scale),int(pu[j]*0.25/scale))); // 0.25 is the target scale of the depthmaps (due to storage shortness)
         sharp(j) = double(int(sharpness[j].at<uchar>(pv[j],pu[j])));
+        int img_width = intrinsics_mat(j, 7);
+        int img_height = intrinsics_mat(j, 8);
+        int row = int(pv[j]*0.25/scale);
+        int col = int(pu[j]*0.25/scale);
+
+        // if the image is in landscape format, swap the indices
+        if (img_width < img_height)
+        {
+            row = int(pu[j]*0.25/scale);
+            col = int(pv[j]*0.25/scale);
+        }
+        visible(j) = double(depths[j](row,col)); // 0.25 is the target scale of the depthmaps (due to storage shortness)
+
     }
 
     // visibility mask
