@@ -455,7 +455,7 @@ void Scene::filter_cameras(std::string in_cloud){
     #pragma omp parallel for
     for(int i = 0; i < xyz.size(); i++){
         // some console output
-        if (omp_get_thread_num() == 0 && i % int(xyz.size()/16/100) == 0 || i == (xyz.size()/16-1)){
+        if (omp_get_thread_num() == 0 && i % int(xyz.size()/16/100+1) == 0 || i == (xyz.size()/16-1)){
             std::cout << "\t\r" << int(100*i/(xyz.size()/16-1)) << "% of " << xyz.size() << " | Time: " <<
                 std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - begin).count()
                 << "sec " << std::flush;
@@ -538,7 +538,7 @@ void Scene::colorize_point_cloud(std::string in_cloud, std::string out_cloud){
     #pragma omp parallel for
     for(int i = 0; i < xyz.size(); i++){
         // some console output
-        if (omp_get_thread_num() == 0 && i % int(xyz.size()/16/100) == 0 || i == (xyz.size()/16-1)){
+        if (omp_get_thread_num() == 0 && i % int(xyz.size()/16/100+1) == 0 || i == (xyz.size()/16-1)){
             std::cout << "\t\r" << int(100*i/(xyz.size()/16-1)) << "% of " << xyz.size() << " | Time: " <<
                 std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - begin).count()
                 << "sec " << std::flush;
