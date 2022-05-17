@@ -250,7 +250,8 @@ void Scene::cache_images
                 error_msg << "File not found: " << img_path << std::endl;
                 throw std::runtime_error(error_msg.str());
             }
-            cv::resize(img, img, cv::Size(int(scale * img.cols), int(scale * img.rows)), cv::INTER_LINEAR);
+            if (img_scale != 1.0)
+                cv::resize(img, img, cv::Size(int(scale * img.cols), int(scale * img.rows)), cv::INTER_LINEAR);
             curr_images.push_back(img);
         }
         images.push_back(curr_images);
@@ -262,7 +263,8 @@ void Scene::cache_images
         if (!std::filesystem::exists(img_path))
             img_path = sharpness_path + "/" + label + ".png";
         cv::Mat img = cv::imread(img_path, cv::IMREAD_GRAYSCALE);
-        cv::resize(img, img, cv::Size(int(scale * img.cols), int(scale * img.rows)), cv::INTER_LINEAR);
+        if (img_scale != 1.0)
+            cv::resize(img, img, cv::Size(int(scale * img.cols), int(scale * img.rows)), cv::INTER_LINEAR);
         sharpness.push_back(img);
 
         // cache depth
