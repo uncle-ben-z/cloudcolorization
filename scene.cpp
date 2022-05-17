@@ -228,9 +228,11 @@ void Scene::cache_images
     height = int(height * scale);
     number_classes = imgs_paths.size();
 
-    std::cout << "Caching images..." << std::flush;
-
+    int img_count = 0;
     for(std::string label : labels){
+        std::cout << "\t\r Caching " << img_count << " of " << labels.size() << std::flush;
+        img_count++;
+
         // cache images
         std::vector<cv::Mat> curr_images;
         for (int i = 0; i < number_classes; i++){
