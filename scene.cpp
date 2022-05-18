@@ -228,9 +228,11 @@ void Scene::cache_images
     height = int(height * scale);
     number_classes = imgs_paths.size();
 
-    std::cout << "Caching images..." << std::flush;
-
+    int img_count = 0;
     for(std::string label : labels){
+        std::cout << "\t\r Caching " << img_count << " of " << labels.size() << std::flush;
+        img_count++;
+
         // cache images
         std::vector<cv::Mat> curr_images;
         for (int i = 0; i < number_classes; i++){
@@ -248,7 +250,8 @@ void Scene::cache_images
                 error_msg << "File not found: " << img_path << std::endl;
                 throw std::runtime_error(error_msg.str());
             }
-            cv::resize(img, img, cv::Size(int(scale * img.cols), int(scale * img.rows)), cv::INTER_LINEAR);
+            if (img_scale != 1.0)
+                cv::resize(img, img, cv::Size(int(scale * img.cols), int(scale * img.rows)), cv::INTER_LINEAR);
             curr_images.push_back(img);
         }
         images.push_back(curr_images);
@@ -260,7 +263,8 @@ void Scene::cache_images
         if (!std::filesystem::exists(img_path))
             img_path = sharpness_path + "/" + label + ".png";
         cv::Mat img = cv::imread(img_path, cv::IMREAD_GRAYSCALE);
-        cv::resize(img, img, cv::Size(int(scale * img.cols), int(scale * img.rows)), cv::INTER_LINEAR);
+        if (img_scale != 1.0)
+            cv::resize(img, img, cv::Size(int(scale * img.cols), int(scale * img.rows)), cv::INTER_LINEAR);
         sharpness.push_back(img);
 
         // cache depth
@@ -339,6 +343,7 @@ std::tuple<std::vector<double>, std::vector<double>, std::vector<double>, std::v
     Eigen::VectorXd distances = (img_plane_uv - point_trans_dist).colwise().norm() * chunk_scale;
 
     // determine uv mask
+    // TODO: maybe use orientation from agisoft xml
     Eigen::VectorXd mask = (0 < pu.array() && pu.array() <  scale * intrinsics_mat(0,7) &&
                                0 < pv.array() && pv.array() < scale * intrinsics_mat(0,8)).cast<double>();
 
@@ -382,8 +387,20 @@ std::vector<double> Scene::compute_weight(std::vector<double> pu_in, std::vector
     for (int j = 0; j < pu.size(); j++ ){
         if (uv_mask[j] == 0)
             continue;
-        visible(j) = double(depths[j](int(pv[j]*0.25/scale),int(pu[j]*0.25/scale))); // 0.25 is the target scale of the depthmaps (due to storage shortness)
         sharp(j) = double(int(sharpness[j].at<uchar>(pv[j],pu[j])));
+        int img_width = intrinsics_mat(j, 7);
+        int img_height = intrinsics_mat(j, 8);
+        int row = int(pv[j]*0.25/scale);
+        int col = int(pu[j]*0.25/scale);
+
+        // if the image is in landscape format, swap the indices
+        if (img_width < img_height)
+        {
+            row = int(pu[j]*0.25/scale);
+            col = int(pv[j]*0.25/scale);
+        }
+        visible(j) = double(depths[j](row,col)); // 0.25 is the target scale of the depthmaps (due to storage shortness)
+
     }
 
     // visibility mask
@@ -438,7 +455,7 @@ void Scene::filter_cameras(std::string in_cloud){
     #pragma omp parallel for
     for(int i = 0; i < xyz.size(); i++){
         // some console output
-        if (omp_get_thread_num() == 0 && i % int(xyz.size()/16/100) == 0 || i == (xyz.size()/16-1)){
+        if (omp_get_thread_num() == 0 && i % int(xyz.size()/16/100+1) == 0 || i == (xyz.size()/16-1)){
             std::cout << "\t\r" << int(100*i/(xyz.size()/16-1)) << "% of " << xyz.size() << " | Time: " <<
                 std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - begin).count()
                 << "sec " << std::flush;
@@ -521,7 +538,7 @@ void Scene::colorize_point_cloud(std::string in_cloud, std::string out_cloud){
     #pragma omp parallel for
     for(int i = 0; i < xyz.size(); i++){
         // some console output
-        if (omp_get_thread_num() == 0 && i % int(xyz.size()/16/100) == 0 || i == (xyz.size()/16-1)){
+        if (omp_get_thread_num() == 0 && i % int(xyz.size()/16/100+1) == 0 || i == (xyz.size()/16-1)){
             std::cout << "\t\r" << int(100*i/(xyz.size()/16-1)) << "% of " << xyz.size() << " | Time: " <<
                 std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - begin).count()
                 << "sec " << std::flush;
